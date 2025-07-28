@@ -70,15 +70,15 @@ if platform.system() == "Windows":
 
 warnings.filterwarnings("ignore")
 
-SEED = 42
+SEED = int(time.time()) % (2**32)  # 動的なシード値
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(SEED)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
 
+torch.backends.cudnn.deterministic = False  # 多様性を優先するなら False
+torch.backends.cudnn.benchmark = True       # 性能最適化を有効に
 def git_commit_and_push(file_path, message):
     try:
         subprocess.run(["git", "add", file_path], check=True)
