@@ -7,3 +7,4 @@ lxml==4.6.5
 requests
 beautifulsoup4
 selenium==4.21.0
+onnx
