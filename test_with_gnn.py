@@ -1364,31 +1364,41 @@ def verify_predictions(predictions, historical_data, top_k=5):
             return False
         if not np.all((numbers >= 1) & (numbers <= 37)):
             return False
+        if not np.issubdtype(numbers.dtype, np.integer):
+            return False
         return True
 
-    print("[INFO] 予測候補をフィルタリング中...")
+    print(f"[INFO] 予測候補をフィルタリング中...（総数: {len(predictions)}）")
 
-    # --- 正しい予測だけ残す ---
+    # --- 有効な予測だけ抽出 ---
     valid_predictions = []
     for pred, conf in predictions:
-        numbers = np.sort(pred)
-        if check_number_constraints(numbers):
-            valid_predictions.append((numbers, conf))
+        try:
+            numbers = np.array(pred)
+            numbers = np.unique(np.round(numbers).astype(int))
+            numbers = np.sort(numbers)
+            if check_number_constraints(numbers):
+                valid_predictions.append((numbers, conf))
+        except Exception as e:
+            print(f"[WARNING] 予測整形中にエラー: {e}")
+            continue
+
+    print(f"[INFO] 有効な予測数: {len(valid_predictions)} 件")
 
     if not valid_predictions:
         print("[WARNING] 有効な予測がありません")
         return []
 
-    # --- 信頼度順に上位100個に絞る ---
+    # --- 上位候補を選定 ---
     valid_predictions.sort(key=lambda x: x[1], reverse=True)
-    candidates = valid_predictions[:100]
+    candidates = valid_predictions[:max(100, top_k)]
 
-    # --- カバレッジ最大化アルゴリズムで選抜 ---
+    # --- カバレッジ最大化による選抜 ---
     selected = []
     used_numbers = set()
     used_flags = [False] * len(candidates)
 
-    while len(selected) < (top_k - 2):
+    while len(selected) < max(top_k - 2, 1):
         best_score = -1
         best_idx = -1
 
@@ -1398,11 +1408,7 @@ def verify_predictions(predictions, historical_data, top_k=5):
             combined = used_numbers.union(numbers_set)
             coverage_score = len(combined)
             random_boost = random.uniform(0, 1) * 0.1
-
-            # 類似スコアは無効化（定数）
-            similarity_score = 0.0
-
-            total_score = (coverage_score * 0.6) + (conf * 0.2) + (similarity_score * 0.2) + random_boost
+            total_score = (coverage_score * 0.6) + (conf * 0.2) + random_boost
 
             if total_score > best_score:
                 best_score = total_score
