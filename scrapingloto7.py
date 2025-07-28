@@ -8,13 +8,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
 
-# Configure Chrome Driver
-chrome_service = Service(r"H:\Numbers\chromedriver.exe")
-chrome_options = Options()
-chrome_options.add_argument("--headless")  # Run in headless mode for faster execution
-driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
+# === Chrome設定 ===
+options = Options()
+options.add_argument("--headless")
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
 
 # Load the target page
+driver = webdriver.Chrome(options=options)
 url = "https://www.mizuhobank.co.jp/takarakuji/check/loto/loto7/index.html"
 driver.get(url)
 
