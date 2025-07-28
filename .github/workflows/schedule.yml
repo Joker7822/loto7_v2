@@ -2,7 +2,7 @@ name: Auto Scrape loto7
 
 on:
   schedule:
-    - cron: '0 11 * * 5'  # JST 20:00（UTC 11:00）、月〜金
+    - cron: '0 11 * * 5'  # JST 20:00（UTC 11:00）、金曜
   workflow_dispatch:
 
 jobs:
@@ -75,7 +75,7 @@ jobs:
       - name: Run predictor script
         run: xvfb-run -a python test_with_gnn.py
 
-      - name: Commit and push prediction results
+      - name: Commit and push prediction results if changed
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -89,7 +89,10 @@ jobs:
           git pull --rebase origin ${{ github.ref_name }}
           git stash pop || true
 
-          git add loto7_predictions.csv loto7_prediction_evaluation_with_bonus.csv loto7_evaluation_summary.txt self_predictions.csv
+          git add loto7_predictions.csv \
+                  loto7_prediction_evaluation_with_bonus.csv \
+                  loto7_evaluation_summary.txt \
+                  self_predictions.csv
 
           if git diff --cached --quiet; then
             echo "No prediction result changes"
