@@ -517,7 +517,7 @@ def convert_hit_combos_to_training_data(hit_combos, original_data):
 class LotoPredictor:
     def __init__(self, input_size, hidden_size, output_size):
         print("[INFO] モデルを初期化")
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cpu")
         self.lstm_model = LotoLSTM(input_size, hidden_size, output_size)
         self.regression_models = [None] * 7
         self.scaler = None
@@ -589,7 +589,7 @@ class LotoPredictor:
         try:
             X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42)
             input_size = X_train.shape[1]
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            device = torch.device("cpu")
 
             # --- LSTM モデル ---
             X_train_tensor = torch.tensor(X_train.reshape(-1, 1, input_size), dtype=torch.float32).to(device)
@@ -617,13 +617,13 @@ class LotoPredictor:
                     predictor = TabularPredictor(label='target', path=f'autogluon_model_pos{i}').fit(
                         df_train,
                         excluded_model_types=['KNN', 'NN_TORCH'],
-                        hyperparameters={
-                            'GBM': {'device': 'gpu', 'num_boost_round': 300},
-                            'XGB': {'tree_method': 'gpu_hist', 'n_estimators': 300},
-                            'CAT': {'task_type': 'GPU', 'iterations': 300},
-                            'RF': {'n_estimators': 200}
-                        },
-                        num_gpus=1
+            hyperparameters={
+                'GBM': {'device': 'cpu', 'num_boost_round': 300},
+                'XGB': {'tree_method': 'hist', 'n_estimators': 300},
+                'CAT': {'task_type': 'CPU', 'iterations': 300},
+                'RF': {'n_estimators': 200}
+            },
+            num_gpus=0
                     )
                     self.regression_models[i] = predictor
                     print(f"[DEBUG] AutoGluon モデル {i+1}/7 の学習完了")
@@ -868,7 +868,7 @@ class LotoPredictor:
             x = torch.eye(37)
             graph_data = Data(x=x, edge_index=edge_index)
 
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            device = torch.device("cpu")
             self.gnn_model.eval()
             with torch.no_grad():
                 gnn_scores = self.gnn_model(graph_data.to(device)).squeeze().cpu().numpy()
