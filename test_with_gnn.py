@@ -1360,7 +1360,6 @@ def generate_evolution_graph(log_file="evolution_log.txt", output_file="evolutio
     print(f"[INFO] 進化履歴グラフを保存しました: {output_file}")
 
 def verify_predictions(predictions, historical_data, top_k=5):
-
     def check_number_constraints(numbers):
         """予測数字配列の制約チェック"""
         if len(numbers) != 7:
@@ -1388,7 +1387,7 @@ def verify_predictions(predictions, historical_data, top_k=5):
     valid_predictions.sort(key=lambda x: x[1], reverse=True)
     candidates = valid_predictions[:100]
 
-    # --- 🔥 カバレッジ最大化アルゴリズムで選抜 ---
+    # --- カバレッジ最大化アルゴリズムで選抜 ---
     selected = []
     used_numbers = set()
     used_flags = [False] * len(candidates)
@@ -1404,17 +1403,9 @@ def verify_predictions(predictions, historical_data, top_k=5):
             coverage_score = len(combined)
             random_boost = random.uniform(0, 1) * 0.1
 
-            # 🔥 SBERTベースの類似スコアを加算
+            # 類似スコアは無効化（定数）
             similarity_score = 0.0
-            try:
-                history = historical_data['本数字'].tolist()
-                top_similar = most_similar(numbers_set, history, k=3)
-                # 類似セットが多いほどスコアを上げる（最大3点）
-                similarity_score = len(top_similar)
-            except Exception as e:
-                print(f"[WARNING] 類似度計算エラー: {e}")
 
-            # 合計スコアに組み込み（ウェイトは調整可）
             total_score = (coverage_score * 0.6) + (conf * 0.2) + (similarity_score * 0.2) + random_boost
 
             if total_score > best_score:
@@ -1428,7 +1419,7 @@ def verify_predictions(predictions, historical_data, top_k=5):
         used_numbers.update(candidates[best_idx][0])
         used_flags[best_idx] = True
 
-    # --- 🔥 強制6本構成を追加 ---
+    # --- 強制6本構成を追加 ---
     try:
         historical = historical_data.copy()
         historical['本数字'] = historical['本数字'].apply(lambda x: list(map(int, x)) if isinstance(x, list) else [])
