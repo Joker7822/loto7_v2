@@ -47,9 +47,9 @@ jobs:
         run: pip install -r requirements_heavy.txt
 
       - name: Run scraping script
-        run: xvfb-run -a python scrapingnumbers3.py
+        run: xvfb-run -a python scrapingloto7.py
 
-      - name: Commit and push numbers3.csv if changed
+      - name: Commit and push loto7.csv if changed
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -63,17 +63,17 @@ jobs:
           git pull --rebase origin ${{ github.ref_name }}
           git stash pop || true
 
-          git add numbers3.csv
+          git add loto7.csv
 
           if git diff --cached --quiet; then
-            echo "No changes to numbers3.csv"
+            echo "No changes to loto7.csv"
           else
-            git commit -m "Auto update numbers3.csv [skip ci]"
+            git commit -m "Auto update loto7.csv [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
 
       - name: Run predictor script
-        run: xvfb-run -a python numbers3_predictor.py
+        run: xvfb-run -a python loto7_predictor.py
 
       - name: Commit and push prediction results
         env:
@@ -89,7 +89,7 @@ jobs:
           git pull --rebase origin ${{ github.ref_name }}
           git stash pop || true
 
-          git add Numbers3_predictions.csv evaluation_result.csv evaluation_summary.txt self_predictions.csv
+          git add loto7_predictions.csv loto7_prediction_evaluation_with_bonus.csv loto7_evaluation_summary.txt self_predictions.csv
 
           if git diff --cached --quiet; then
             echo "No prediction result changes"
