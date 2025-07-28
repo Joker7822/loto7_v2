@@ -64,11 +64,16 @@ finally:
     # Close the driver
     driver.quit()
 
-# Load existing CSV to check for duplicates and get the format
-csv_file_path = r'H:\Numbers\loto7\loto7.csv'
-existing_data = pd.read_csv(csv_file_path)
-existing_dates = existing_data["抽せん日"].tolist()
-fieldnames = existing_data.columns.tolist()  # Preserve existing column order and names
+# === 保存処理 ===
+csv_path = "loto7.csv"
+try:
+    existing = pd.read_csv(csv_path)
+    existing_dates = existing["抽せん日"].tolist()
+    fieldnames = existing.columns.tolist()
+except FileNotFoundError:
+    existing = pd.DataFrame()
+    existing_dates = []
+    fieldnames = ["抽せん日", "本数字", "ボーナス数字", "回別"]
 
 # Filter out duplicates
 new_data = [row for row in data if row["抽せん日"] not in existing_dates]
