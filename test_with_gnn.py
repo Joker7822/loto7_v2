@@ -63,6 +63,7 @@ from stacking_model import (
 )
 import traceback  # 上部でインポートしておいてください
 import subprocess
+from zero_shot_module import most_similar
 
 # Windows環境のイベントループポリシーを設定
 if platform.system() == "Windows":
@@ -517,7 +518,7 @@ def convert_hit_combos_to_training_data(hit_combos, original_data):
 class LotoPredictor:
     def __init__(self, input_size, hidden_size, output_size):
         print("[INFO] モデルを初期化")
-        device = torch.device("cpu")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.lstm_model = LotoLSTM(input_size, hidden_size, output_size)
         self.regression_models = [None] * 7
         self.scaler = None
@@ -589,7 +590,7 @@ class LotoPredictor:
         try:
             X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42)
             input_size = X_train.shape[1]
-            device = torch.device("cpu")
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
             # --- LSTM モデル ---
             X_train_tensor = torch.tensor(X_train.reshape(-1, 1, input_size), dtype=torch.float32).to(device)
@@ -608,7 +609,6 @@ class LotoPredictor:
             if self.onnx_session is None:
                 print("[ERROR] ONNXモデルのロードに失敗しました")
                 return False
-
             # --- AutoGluon モデル ---
             self.regression_models = [None] * 7
             for i in range(7):
@@ -619,12 +619,12 @@ class LotoPredictor:
                         df_train,
                         excluded_model_types=['KNN', 'NN_TORCH'],
                         hyperparameters={
-                            'GBM': {'device': 'cpu', 'num_boost_round': 300},
-                            'XGB': {'tree_method': 'hist', 'n_estimators': 300},
-                            'CAT': {'task_type': 'CPU', 'iterations': 300},
+                            'GBM': {'device': 'gpu', 'num_boost_round': 300},
+                            'XGB': {'tree_method': 'gpu_hist', 'n_estimators': 300},
+                            'CAT': {'task_type': 'GPU', 'iterations': 300},
                             'RF': {'n_estimators': 200}
                         },
-                        num_gpus=0
+                        num_gpus=1
                     )
                     self.regression_models[i] = predictor
                     print(f"[DEBUG] AutoGluon モデル {i+1}/7 の学習完了")
@@ -635,7 +635,15 @@ class LotoPredictor:
             if any(model is None for model in self.regression_models):
                 print("[ERROR] 一部の AutoML モデルが未学習です")
                 return False
-
+            # --- TabNet モデル ---
+            try:
+                from tabnet_module import train_tabnet
+                self.tabnet_model = train_tabnet(X_train, y_train)
+                print("[INFO] TabNet モデルの学習完了")
+            except Exception as e:
+                print(f"[ERROR] TabNet モデルの学習に失敗: {e}")
+                traceback.print_exc()
+                self.tabnet_model = None
             # --- SetTransformer ---
             try:
                 all_numbers = past_data['本数字'].tolist()
@@ -660,7 +668,18 @@ class LotoPredictor:
                 print(f"[ERROR] SetTransformer モデルの学習に失敗: {e}")
                 traceback.print_exc()
                 return False
-
+            # --- BNN モデル ---
+            try:
+                from bnn_module import train_bayesian_regression
+                self.bnn_model, self.bnn_guide = train_bayesian_regression(
+                    X_train, y_train, in_features=input_size, out_features=7, num_steps=500
+                )
+                print("[INFO] BNN モデルの学習完了")
+            except Exception as e:
+                print(f"[ERROR] BNN モデルの学習に失敗: {e}")
+                traceback.print_exc()
+                self.bnn_model = None
+                self.bnn_guide = None
             # --- TFT モデル ---
             try:
                 from neuralforecast.models import TFT
@@ -682,7 +701,6 @@ class LotoPredictor:
                 print(f"[ERROR] TFT モデルの学習に失敗: {e}")
                 traceback.print_exc()
                 self.tft_model = None
-
             # --- GNN モデル ---
             try:
                 import networkx as nx
@@ -722,6 +740,18 @@ class LotoPredictor:
                 print(f"[ERROR] GNN モデルの学習に失敗: {e}")
                 traceback.print_exc()
                 return False
+            # --- Diffusion モデル（DDPM） ---
+            try:
+                from diffusion_module import train_diffusion_ddpm
+                vectors = [convert_number_list_to_vector(nums) for nums in past_data["本数字"]]
+                self.diffusion_model, self.diffusion_betas, self.diffusion_alphas = train_diffusion_ddpm(
+                    np.array(vectors), timesteps=100, epochs=500, batch_size=64
+                )
+                print("[INFO] Diffusion モデルの学習完了")
+            except Exception as e:
+                print(f"[ERROR] Diffusion モデルの学習に失敗: {e}")
+                traceback.print_exc()
+                self.diffusion_model = None
 
             # --- stacking モデル ---
             try:
@@ -754,6 +784,21 @@ class LotoPredictor:
                 print(f"[ERROR] stacking_model の学習に失敗: {e}")
                 traceback.print_exc()
                 return False
+            # --- Stacking 最適化（Optuna） ---
+            try:
+                from stacking_optuna import optimize_stacking
+                pred_dict = {
+                    "lstm": lstm_preds,
+                    "automl": automl_preds,
+                    "gan": [list(g) for g in gan_preds],
+                    "ppo": [list(p) for p in ppo_preds],
+                }
+                self.best_stacking_weights = optimize_stacking(pred_dict, y_train.tolist())
+                print(f"[INFO] Stacking 重み最適化完了: {self.best_stacking_weights}")
+            except Exception as e:
+                print(f"[ERROR] Stacking 重み最適化に失敗: {e}")
+                traceback.print_exc()
+                self.best_stacking_weights = None
 
             return True
 
@@ -824,7 +869,7 @@ class LotoPredictor:
             x = torch.eye(37)
             graph_data = Data(x=x, edge_index=edge_index)
 
-            device = torch.device("cpu")
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             self.gnn_model.eval()
             with torch.no_grad():
                 gnn_scores = self.gnn_model(graph_data.to(device)).squeeze().cpu().numpy()
@@ -1358,7 +1403,19 @@ def verify_predictions(predictions, historical_data, top_k=5):
             combined = used_numbers.union(numbers_set)
             coverage_score = len(combined)
             random_boost = random.uniform(0, 1) * 0.1
-            total_score = (coverage_score * 0.6) + (conf * 0.3) + random_boost
+
+            # 🔥 SBERTベースの類似スコアを加算
+            similarity_score = 0.0
+            try:
+                history = historical_data['本数字'].tolist()
+                top_similar = most_similar(numbers_set, history, k=3)
+                # 類似セットが多いほどスコアを上げる（最大3点）
+                similarity_score = len(top_similar)
+            except Exception as e:
+                print(f"[WARNING] 類似度計算エラー: {e}")
+
+            # 合計スコアに組み込み（ウェイトは調整可）
+            total_score = (coverage_score * 0.6) + (conf * 0.2) + (similarity_score * 0.2) + random_boost
 
             if total_score > best_score:
                 best_score = total_score
