@@ -73,7 +73,7 @@ jobs:
           fi
 
       - name: Run predictor script
-        run: xvfb-run -a python loto7_predictor.py
+        run: xvfb-run -a python test_with_gnn.py
 
       - name: Commit and push prediction results
         env:
