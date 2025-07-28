@@ -911,14 +911,22 @@ class LotoPredictor:
                         self.stacking_model, lstm_vec, automl_vec, gan_vec, ppo_vec
                     )
 
-                    score_freq = sum(freq_score.get(n, 0) for n in numbers)
-                    score_cycle = sum(cycle_score.get(n, 0) for n in numbers)
-                    score_gnn = sum(gnn_scores[n - 1] for n in numbers)
-                    score_tft = abs(sum(numbers) - tft_value) if tft_value is not None else 0
+                    # ✅ 修正: numbers にリストが含まれている可能性に対応
+                    flat_numbers = []
+                    for n in numbers:
+                        if isinstance(n, list):
+                            flat_numbers.extend(n)
+                        else:
+                            flat_numbers.append(n)
+
+                    score_freq = sum(freq_score.get(n, 0) for n in flat_numbers)
+                    score_cycle = sum(cycle_score.get(n, 0) for n in flat_numbers)
+                    score_gnn = sum(gnn_scores[n - 1] for n in flat_numbers)
+                    score_tft = abs(sum(flat_numbers) - tft_value) if tft_value is not None else 0
 
                     score = score_freq - score_cycle + score_gnn - score_tft
                     confidence = 1.0 + (score / 500.0)
-                    all_predictions.append((numbers, confidence))
+                    all_predictions.append((flat_numbers, confidence))
 
                 except Exception as e:
                     print(f"[WARNING] stacking予測中にエラー: {e}")
