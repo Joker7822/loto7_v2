@@ -12,3 +12,4 @@ stable_baselines3
 tabpfn
 rtdl-num-embeddings
 torch-geometric
+sentence-transformers
