@@ -93,6 +93,17 @@ def git_commit_and_push(file_path, message):
     except Exception as e:
         print(f"[WARNING] Git commit/push failed: {e}")
 
+# 実行対象ファイル（複数）
+targets = [
+    "loto7_predictions.csv",
+    "loto7_prediction_evaluation_with_bonus.csv",
+    "loto7_evaluation_summary.txt",
+    "self_predictions.csv"
+]
+
+for file in targets:
+    git_commit_and_push(file, f"Auto update {file} [skip ci]")
+
 class LotoEnv(gym.Env):
     def __init__(self, historical_numbers):
         super(LotoEnv, self).__init__()
@@ -1304,8 +1315,6 @@ def generate_evolution_graph(log_file="evolution_log.txt", output_file="evolutio
     print(f"[INFO] 進化履歴グラフを保存しました: {output_file}")
 
 def verify_predictions(predictions, historical_data, top_k=5):
-    import numpy as np
-    import random
 
     def check_number_constraints(numbers):
         """予測数字配列の制約チェック"""
@@ -1348,7 +1357,8 @@ def verify_predictions(predictions, historical_data, top_k=5):
                 continue
             combined = used_numbers.union(numbers_set)
             coverage_score = len(combined)
-            total_score = (coverage_score * 0.7) + (conf * 0.3)
+            random_boost = random.uniform(0, 1) * 0.1
+            total_score = (coverage_score * 0.6) + (conf * 0.3) + random_boost
 
             if total_score > best_score:
                 best_score = total_score
@@ -1403,7 +1413,6 @@ def verify_predictions(predictions, historical_data, top_k=5):
 
     print("[INFO] 最終選択された予測数:", len(selected))
     return selected
-
 # --- 🔥 新規追加関数 ---
 def extract_high_match_patterns(dataframe, min_match=6):
     """過去データから高一致パターンだけ抽出"""
@@ -1440,53 +1449,60 @@ def calculate_number_cycle_score(dataframe):
     avg_cycle = {n: np.mean(cycles) if cycles else 999 for n, cycles in number_cycle.items()}
     return avg_cycle
 
-import traceback
-from datetime import datetime
-
 def bulk_predict_all_past_draws():
     df = pd.read_csv("loto7.csv")
     df["抽せん日"] = pd.to_datetime(df["抽せん日"])
     df = df.sort_values("抽せん日").reset_index(drop=True)
 
     predictions_file = "loto7_predictions.csv"
+
+    # ✅ 既存の予測日付を読み取り
+    predicted_dates = set()
     if os.path.exists(predictions_file):
-        os.remove(predictions_file)
-        print(f"[INFO] 既存の予測ファイルを削除: {predictions_file}")
+        try:
+            pred_df = pd.read_csv(predictions_file, encoding='utf-8-sig')
+            pred_df["抽せん日"] = pd.to_datetime(pred_df["抽せん日"], errors='coerce')
+            predicted_dates = set(pred_df["抽せん日"].dropna().dt.date)
+            print(f"[INFO] 予測済み日付: {len(predicted_dates)} 件")
+        except Exception as e:
+            print(f"[WARNING] 予測済みファイルの読み込み失敗: {e}")
 
     total = len(df)
+    predictor = None
+    input_size = 0
+
     for i in range(10, total):
-        train_data = df.iloc[:i]
         test_row = df.iloc[i]
         test_date = test_row["抽せん日"]
         test_date_str = test_date.strftime("%Y-%m-%d")
+
+        # ✅ すでに予測済みならスキップ
+        if test_date.date() in predicted_dates:
+            print(f"[SKIP] 既に予測済み: {test_date_str}")
+            continue
+
         print(f"\n=== {test_date_str} の予測を開始（{i}/{total - 1}） ===")
-
         latest_data = df.iloc[i - 10:i]
+        train_data = df.iloc[:i]
 
-        # 特徴量サイズ確認のための仮処理
-        try:
-            X_tmp, _, _, _ = preprocess_data(train_data)
-            if X_tmp is None or X_tmp.shape[1] == 0:
-                print(f"[WARNING] {test_date_str} の特徴量が不正です。スキップします。")
+        # ✅ 50件ごとに再学習 または 初回
+        if predictor is None or (i - 10) % 50 == 0:
+            print(f"[INFO] モデルを再学習中...（index={i}）")
+            try:
+                X_tmp, _, _, _ = preprocess_data(train_data)
+                if X_tmp is None or X_tmp.shape[1] == 0:
+                    print(f"[WARNING] {test_date_str} の特徴量が不正です。スキップします。")
+                    continue
+                input_size = X_tmp.shape[1]
+                predictor = LotoPredictor(input_size, 128, 7)
+                success = predictor.train_model(train_data)
+                if not success:
+                    print(f"[ERROR] {test_date_str} モデル学習に失敗しました。スキップします。")
+                    continue
+            except Exception as e:
+                print(f"[ERROR] {test_date_str} モデル学習例外: {e}")
+                traceback.print_exc()
                 continue
-            input_size = X_tmp.shape[1]
-        except Exception as e:
-            print(f"[ERROR] {test_date_str} 特徴量生成エラー: {e}")
-            traceback.print_exc()
-            continue
-
-        predictor = LotoPredictor(input_size, 128, 7)
-
-        # モデル学習
-        try:
-            success = predictor.train_model(train_data)
-            if not success:
-                print(f"[ERROR] {test_date_str} モデル学習に失敗しました。スキップします。")
-                continue
-        except Exception as e:
-            print(f"[ERROR] {test_date_str} モデル学習例外: {e}")
-            traceback.print_exc()
-            continue
 
         # 予測
         try:

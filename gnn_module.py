@@ -8,11 +8,14 @@ class LotoGNN(nn.Module):
     def __init__(self):
         super().__init__()
         self.conv1 = GCNConv(37, 64)
-        self.conv2 = GCNConv(64, 1)
+        self.conv2 = GCNConv(64, 32)
+        self.fc = nn.Linear(32, 1)
+
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
         x = self.conv1(x, edge_index).relu()
-        return self.conv2(x, edge_index)
+        x = self.conv2(x, edge_index).relu()
+        return self.fc(x)
 
 def build_loto_graph(df):
     G = nx.Graph()
