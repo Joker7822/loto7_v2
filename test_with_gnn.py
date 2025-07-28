@@ -63,7 +63,6 @@ from stacking_model import (
 )
 import traceback  # 上部でインポートしておいてください
 import subprocess
-from zero_shot_module import most_similar
 
 # Windows環境のイベントループポリシーを設定
 if platform.system() == "Windows":
