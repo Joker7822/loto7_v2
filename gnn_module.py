@@ -1,28 +1,60 @@
+# === CPU専用修正版 for test_with_gnn.py ===
+# 以下のコードは、GPU環境が使えない環境でもAutoGluon、GNN、LSTM等が正しく動作するように修正されたパッチです。
+
 import torch
-import torch.nn as nn
-from torch_geometric.data import Data
-from torch_geometric.nn import GCNConv
-import networkx as nx
+from autogluon.tabular import TabularPredictor
 
-class LotoGNN(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv1 = GCNConv(37, 64)
-        self.conv2 = GCNConv(64, 32)
-        self.fc = nn.Linear(32, 1)
+# ✅ device を常に CPU に強制
+DEVICE = torch.device("cpu")
 
-    def forward(self, data):
-        x, edge_index = data.x, data.edge_index
-        x = self.conv1(x, edge_index).relu()
-        x = self.conv2(x, edge_index).relu()
-        return self.fc(x)
+def force_cpu_predictor_fit(X, y, model_index):
+    df_train = pd.DataFrame(X)
+    df_train['target'] = y[:, model_index]
+    predictor = TabularPredictor(label='target', path=f'autogluon_model_pos{model_index}').fit(
+        df_train,
+        excluded_model_types=['KNN', 'NN_TORCH'],
+        hyperparameters={
+            'GBM': {'device': 'cpu', 'num_boost_round': 300},
+            'XGB': {'tree_method': 'hist', 'n_estimators': 300},
+            'CAT': {'task_type': 'CPU', 'iterations': 300},
+            'RF': {'n_estimators': 200}
+        },
+        num_gpus=0
+    )
+    return predictor
 
-def build_loto_graph(df):
-    G = nx.Graph()
-    for nums in df['本数字']:
-        for i in range(7):
-            for j in range(i+1, 7):
-                G.add_edge(nums[i]-1, nums[j]-1)
-    edge_index = torch.tensor(list(G.edges), dtype=torch.long).t().contiguous()
-    x = torch.eye(37)
-    return Data(x=x, edge_index=edge_index)
+# ✅ train_model 内で device を CPU に固定
+device = DEVICE
+
+# ✅ ONNX provider
+import onnxruntime
+onnx_session = onnxruntime.InferenceSession(
+    "lstm_model.onnx",
+    providers=['CPUExecutionProvider']
+)
+
+# ✅ GNNの学習部分で GPU を使わないようにする
+try:
+    from gnn_module import LotoGNN, build_loto_graph
+    graph_data = build_loto_graph(past_data)
+    gnn_model = LotoGNN().to(DEVICE)
+    optimizer = torch.optim.Adam(gnn_model.parameters(), lr=0.01)
+    gnn_model.train()
+    for epoch in range(100):
+        optimizer.zero_grad()
+        out = gnn_model(graph_data.to(DEVICE))
+        loss = out.mean()
+        loss.backward()
+        optimizer.step()
+    print("[INFO] GNN モデルの学習完了（CPU）")
+except Exception as e:
+    print(f"[WARNING] GNN モデルをスキップ: {e}")
+    gnn_model = None
+
+# ✅ GNN の予測部分（予測時も CPU）
+if gnn_model:
+    gnn_model.eval()
+    with torch.no_grad():
+        gnn_scores = gnn_model(graph_data.to(DEVICE)).squeeze().cpu().numpy()
+else:
+    gnn_scores = np.zeros(37)  # 予測できない場合はスコアをゼロに
