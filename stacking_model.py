@@ -56,6 +56,10 @@ def predict_with_stacking(stack_model, lstm, automl, gan_vec, ppo_vec):
     input_vec = np.concatenate([lstm_vec, automl_vec, gan_vec, ppo_vec]).reshape(1, -1)
 
     pred_proba = stack_model.predict_proba(input_vec)
-    score_vec = np.array([p[1] if isinstance(p, np.ndarray) and len(p) > 1 else 0.0 for p in pred_proba])
+    score_vec = np.array([
+        p[1] if isinstance(p, np.ndarray) and len(p) > 1 else p[0] if isinstance(p, np.ndarray) else 0.0
+        for p in pred_proba
+    ])
     top7 = np.argsort(score_vec)[-7:] + 1
+    top7 = top7.astype(int).tolist()
     return sorted(top7), score_vec
