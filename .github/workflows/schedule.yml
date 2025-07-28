@@ -1,0 +1,99 @@
+name: Auto Scrape Numbers3
+
+on:
+  schedule:
+    - cron: '0 11 * * 1-5'  # JST 20:00（UTC 11:00）、月〜金
+  workflow_dispatch:
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies and headless Chrome
+        run: |
+          sudo apt update
+          sudo apt install -y wget unzip xvfb \
+            libglib2.0-0 libnss3 libxi6 libxcomposite1 libxss1 \
+            libatk-bridge2.0-0 libgtk-3-0 libasound2t64
+
+          # Install Chrome 138
+          wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chrome-linux64.zip
+          unzip chrome-linux64.zip
+          sudo mv chrome-linux64 /opt/chrome
+          sudo ln -sf /opt/chrome/chrome /usr/bin/google-chrome
+
+          # Install ChromeDriver 138
+          wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chromedriver-linux64.zip
+          unzip chromedriver-linux64.zip
+          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+          sudo chmod +x /usr/local/bin/chromedriver
+
+      - name: Downgrade pip to stable version
+        run: python -m pip install pip==23.3.1
+
+      - name: Install core dependencies
+        run: pip install -r requirements_core.txt
+
+      - name: Install heavy dependencies
+        run: pip install -r requirements_heavy.txt
+
+      - name: Run scraping script
+        run: xvfb-run -a python scrapingnumbers3.py
+
+      - name: Commit and push numbers3.csv if changed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+          git fetch origin
+          git stash --include-untracked
+          git checkout ${{ github.ref_name }}
+          git pull --rebase origin ${{ github.ref_name }}
+          git stash pop || true
+
+          git add numbers3.csv
+
+          if git diff --cached --quiet; then
+            echo "No changes to numbers3.csv"
+          else
+            git commit -m "Auto update numbers3.csv [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
+
+      - name: Run predictor script
+        run: xvfb-run -a python numbers3_predictor.py
+
+      - name: Commit and push prediction results
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+          git fetch origin
+          git stash --include-untracked
+          git checkout ${{ github.ref_name }}
+          git pull --rebase origin ${{ github.ref_name }}
+          git stash pop || true
+
+          git add Numbers3_predictions.csv evaluation_result.csv evaluation_summary.txt self_predictions.csv
+
+          if git diff --cached --quiet; then
+            echo "No prediction result changes"
+          else
+            git commit -m "Auto update prediction results [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
