@@ -1,0 +1,13 @@
+xgboost==1.7.6
+catboost
+lightgbm
+statsmodels
+optuna
+gym
+aiohttp
+neuralforecast
+onnxruntime
+autogluon
+stable_baselines3
+tabpfn
+rtdl-num-embeddings
