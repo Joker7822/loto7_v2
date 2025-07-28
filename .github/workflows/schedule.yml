@@ -1,8 +1,8 @@
-name: Auto Scrape Numbers3
+name: Auto Scrape loto7
 
 on:
   schedule:
-    - cron: '0 11 * * 1-5'  # JST 20:00（UTC 11:00）、月〜金
+    - cron: '0 11 * * 5'  # JST 20:00（UTC 11:00）、月〜金
   workflow_dispatch:
 
 jobs:
