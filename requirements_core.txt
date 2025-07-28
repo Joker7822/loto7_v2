@@ -9,3 +9,5 @@ beautifulsoup4
 selenium==4.21.0
 onnx
 sentence_transformers
+pyro
+pytorch_tabnet
