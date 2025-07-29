@@ -13,3 +13,4 @@ tabpfn
 rtdl-num-embeddings
 torch-geometric
 sentence_transformers
+tensorflow
