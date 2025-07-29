@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import numpy as np
@@ -35,3 +36,21 @@ def predict_tabnet(model, X):
     """
     preds = model.predict(X)
     return preds
+
+
+def save_tabnet_model(model, save_path):
+    """
+    TabNet モデルを指定ディレクトリに保存する
+    """
+    os.makedirs(save_path, exist_ok=True)
+    model.save_model(os.path.join(save_path, "tabnet_model.zip"))
+    print(f"[INFO] TabNet モデルを保存しました → {save_path}")
+
+
+def load_tabnet_model(load_path):
+    """
+    指定ディレクトリから TabNet モデルをロードする
+    """
+    model = TabNetRegressor()
+    model.load_model(os.path.join(load_path, "tabnet_model.zip"))
+    return model
