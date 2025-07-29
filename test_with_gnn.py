@@ -42,7 +42,7 @@ import asyncio
 import warnings
 import re
 import platform
-import gymnasium as gym
+import gym
 import sys
 import os
 import random
@@ -1503,34 +1503,19 @@ def bulk_predict_all_past_draws():
     print("[INFO] 抽せんデータ読み込み完了:", len(df), "件")
 
     pred_file = "loto7_predictions.csv"
-
-    skip_dates = set()
     if os.path.exists(pred_file):
-        try:
-            pred_df = pd.read_csv(pred_file, encoding='utf-8-sig')
-            if "抽せん日" in pred_df.columns:
-                skip_dates = set(pd.to_datetime(pred_df["抽せん日"], errors='coerce').dropna().dt.strftime("%Y-%m-%d"))
-        except Exception as e:
-            print(f"[WARNING] 予測ファイル読み込みエラー: {e}")
-    else:
-        with open(pred_file, "w", encoding="utf-8-sig") as f:
-            f.write("抽せん日,予測1,信頼度1,予測2,信頼度2,予測3,信頼度3,予測4,信頼度4,予測5,信頼度5\n")
+        os.remove(pred_file)
 
     predictor_cache = {}
 
     for i in range(10, len(df)):
         set_global_seed(1000 + i)
 
-        test_date = df.iloc[i]["抽せん日"]
-        test_date_str = test_date.strftime("%Y-%m-%d")
-
-        if test_date_str in skip_dates:
-            print(f"[INFO] 既に予測済み: {test_date_str} → スキップ")
-            continue
-
-        print(f"\n=== {test_date_str} の予測を開始 ===")
         train_data = df.iloc[:i].copy()
         latest_data = df.iloc[i-10:i].copy()
+        test_date = df.iloc[i]["抽せん日"]
+        test_date_str = test_date.strftime("%Y-%m-%d")
+        print(f"\n=== {test_date_str} の予測を開始 ===")
 
         X, _, _ = preprocess_data(train_data)
         if X is None:
@@ -1539,9 +1524,7 @@ def bulk_predict_all_past_draws():
 
         input_size = X.shape[1]
 
-        # === 50件ごとに再学習 ===
-        if i % 50 == 0 or input_size not in predictor_cache:
-            print(f"[INFO] モデル再学習: {test_date_str} 時点")
+        if input_size not in predictor_cache:
             predictor = LotoPredictor(input_size, 128, 7)
             predictor.train_model(train_data)
             predictor_cache[input_size] = predictor
@@ -1594,10 +1577,10 @@ def bulk_predict_all_past_draws():
             print(f"[WARNING] モデル保存中にエラー発生: {e}")
             traceback.print_exc()
 
+        # ★ 各予測ごとに評価を実行
         evaluate_prediction_accuracy_with_bonus("loto7_predictions.csv", "loto7.csv")
 
     print("\n=== 一括予測とモデル保存・評価が完了しました ===")
-
 
 if __name__ == "__main__":
     import multiprocessing
