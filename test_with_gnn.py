@@ -807,150 +807,150 @@ class LotoPredictor:
             traceback.print_exc()
             return False
 
-def predict(self, latest_data, num_candidates=50):
-    print(f"[INFO] 予測を開始（候補数: {num_candidates}）")
-    X, _, _, _ = preprocess_data(latest_data)
-
-    if X is None or len(X) == 0:
-        print("[ERROR] 予測用データが空です")
-        return None, None
-
-    if not self.regression_models or any(m is None for m in self.regression_models):
-        print("[ERROR] 回帰モデル（AutoML）が未学習です")
-        return None, None
-
-    if self.onnx_session is None:
-        print("[ERROR] ONNXモデル（LSTM）が未ロードです")
-        return None, None
-
-    if self.gnn_model is None:
-        print("[ERROR] GNNモデルが未学習です")
-        return None, None
-
-    if self.stacking_model is None:
-        print("[ERROR] stacking_model が未セットです")
-        return None, None
-
-    print(f"[DEBUG] 予測用データの shape: {X.shape}")
-    try:
-        latest_draw_date = latest_data['抽せん日'].max()
-        past_data = latest_data[latest_data['抽せん日'] < latest_draw_date]
-        if past_data.empty:
-            past_data = latest_data.copy()
-
-        freq_score = calculate_number_frequencies(past_data)
-        cycle_score = calculate_number_cycle_score(past_data)
-
-        # --- GNNスコア計算 ---
-        import networkx as nx
-        from torch_geometric.data import Data
-        G = nx.Graph()
-        for nums in past_data['本数字']:
-            for i in range(len(nums)):
-                for j in range(i + 1, len(nums)):
-                    G.add_edge(nums[i] - 1, nums[j] - 1)
-        edge_index = torch.tensor(list(G.edges), dtype=torch.long).t().contiguous()
-        x = torch.eye(37)
-        graph_data = Data(x=x, edge_index=edge_index)
-
-        device = torch.device("cpu")
-        self.gnn_model.eval()
-        with torch.no_grad():
-            gnn_scores = self.gnn_model(graph_data.to(device)).squeeze().cpu().numpy()
-
-        # --- 特徴量整形 ---
-        expected_features = self.regression_models[0].feature_metadata.get_features()
-        X_df = pd.DataFrame(X, columns=self.feature_names)
-
-        print(f"[DEBUG] X_df.columns: {X_df.columns.tolist()}")
-        print(f"[DEBUG] expected_features: {expected_features}")
-        missing_cols = [col for col in expected_features if col not in X_df.columns]
-        if missing_cols:
-            print(f"[WARNING] AutoML用の不足特徴量を0で補完: {missing_cols}")
-            for col in missing_cols:
-                X_df[col] = 0.0
-        X_df = X_df[expected_features]
-
-        lstm_input_size = self.lstm_model.lstm.input_size
-        if X_df.shape[1] < lstm_input_size:
-            print(f"[WARNING] LSTM向け特徴量が不足: {X_df.shape[1]} → {lstm_input_size} に補完")
-            for i in range(lstm_input_size - X_df.shape[1]):
-                X_df[f'_pad_{i}'] = 0.0
-        elif X_df.shape[1] > lstm_input_size:
-            print(f"[WARNING] LSTM向け特徴量が多すぎます: {X_df.shape[1]} → {lstm_input_size} に切り詰め")
-            X_df = X_df.iloc[:, :lstm_input_size]
-
-        # --- GAベース候補生成 ---
-        from genetic_algorithm import evolve_candidates
-        base_candidates = evolve_candidates(self, X_df, generations=10, population_size=num_candidates)
-
-        print(f"[DEBUG] base_candidates type: {type(base_candidates)}, len: {len(base_candidates)}")
-        if base_candidates:
-            for i, item in enumerate(base_candidates[:3]):
-                print(f"  candidate[{i}] types: {[type(x) for x in item]}")
-
-        if not base_candidates or not isinstance(base_candidates, list) or len(base_candidates) < 1:
-            print("[ERROR] 候補生成に失敗しました（base_candidatesが空または不正）")
+    def predict(self, latest_data, num_candidates=50):
+        print(f"[INFO] 予測を開始（候補数: {num_candidates}）")
+        X, _, _, _ = preprocess_data(latest_data)
+    
+        if X is None or len(X) == 0:
+            print("[ERROR] 予測用データが空です")
             return None, None
-
-        all_predictions = []
-        for idx, (lstm_vec, automl_vec, gan_vec, ppo_vec) in enumerate(base_candidates):
-            try:
-                print(f"[DEBUG] Candidate index {idx}")
-                print(f"  LSTM vec: {lstm_vec[:5]}")
-                print(f"  AutoML vec: {automl_vec[:5]}")
-                print(f"  GAN vec: {gan_vec[:5]}")
-                print(f"  PPO vec: {ppo_vec[:5]}")
-
-                numbers, _ = predict_with_stacking(self.stacking_model, lstm_vec, automl_vec, gan_vec, ppo_vec)
-
-                flat_numbers = []
-                for n in numbers:
-                    if isinstance(n, list):
-                        flat_numbers.extend(n)
-                    else:
-                        flat_numbers.append(n)
-
-                flat_numbers = list(set(np.round(flat_numbers).astype(int)))
-                flat_numbers = [n for n in flat_numbers if 1 <= n <= 37]
-                flat_numbers = sorted(flat_numbers)[:7]
-
-                if len(flat_numbers) != 7:
-                    print(f"[WARNING] 不正な候補: {flat_numbers}")
-                    continue
-
-                score_freq = sum(freq_score.get(n, 0) for n in flat_numbers)
-                score_cycle = sum(cycle_score.get(n, 0) for n in flat_numbers)
-                score_gnn = sum(gnn_scores[n - 1] for n in flat_numbers)
-                score = score_freq - score_cycle + score_gnn
-
-                print(f"  Score (Freq={score_freq}, Cycle={score_cycle}, GNN={score_gnn}) → Total: {score}")
-                if np.isnan(score) or np.isinf(score):
-                    print("[WARNING] スコアが NaN または Inf。スキップ")
-                    continue
-
-                confidence = 1.0 + (score / 500.0)
-                all_predictions.append((flat_numbers, confidence))
-
-            except Exception as e:
-                print(f"[WARNING] stacking予測中にエラー (index {idx}): {e}")
-                traceback.print_exc()
-                continue
-
-        print(f"[INFO] 総予測候補数: {len(all_predictions)} 件")
-
-        if not all_predictions:
-            print("[WARNING] 有効な予測候補が生成されませんでした")
+    
+        if not self.regression_models or any(m is None for m in self.regression_models):
+            print("[ERROR] 回帰モデル（AutoML）が未学習です")
             return None, None
-
-        numbers_only = [pred[0] for pred in all_predictions]
-        confidence_scores = [pred[1] for pred in all_predictions]
-        return numbers_only, confidence_scores
-
-    except Exception as e:
-        print(f"[ERROR] 予測中にエラー発生: {e}")
-        traceback.print_exc()
-        return None, None
+    
+        if self.onnx_session is None:
+            print("[ERROR] ONNXモデル（LSTM）が未ロードです")
+            return None, None
+    
+        if self.gnn_model is None:
+            print("[ERROR] GNNモデルが未学習です")
+            return None, None
+    
+        if self.stacking_model is None:
+            print("[ERROR] stacking_model が未セットです")
+            return None, None
+    
+        print(f"[DEBUG] 予測用データの shape: {X.shape}")
+        try:
+            latest_draw_date = latest_data['抽せん日'].max()
+            past_data = latest_data[latest_data['抽せん日'] < latest_draw_date]
+            if past_data.empty:
+                past_data = latest_data.copy()
+    
+            freq_score = calculate_number_frequencies(past_data)
+            cycle_score = calculate_number_cycle_score(past_data)
+    
+            # --- GNNスコア計算 ---
+            import networkx as nx
+            from torch_geometric.data import Data
+            G = nx.Graph()
+            for nums in past_data['本数字']:
+                for i in range(len(nums)):
+                    for j in range(i + 1, len(nums)):
+                        G.add_edge(nums[i] - 1, nums[j] - 1)
+            edge_index = torch.tensor(list(G.edges), dtype=torch.long).t().contiguous()
+            x = torch.eye(37)
+            graph_data = Data(x=x, edge_index=edge_index)
+    
+            device = torch.device("cpu")
+            self.gnn_model.eval()
+            with torch.no_grad():
+                gnn_scores = self.gnn_model(graph_data.to(device)).squeeze().cpu().numpy()
+    
+            # --- 特徴量整形 ---
+            expected_features = self.regression_models[0].feature_metadata.get_features()
+            X_df = pd.DataFrame(X, columns=self.feature_names)
+    
+            print(f"[DEBUG] X_df.columns: {X_df.columns.tolist()}")
+            print(f"[DEBUG] expected_features: {expected_features}")
+            missing_cols = [col for col in expected_features if col not in X_df.columns]
+            if missing_cols:
+                print(f"[WARNING] AutoML用の不足特徴量を0で補完: {missing_cols}")
+                for col in missing_cols:
+                    X_df[col] = 0.0
+            X_df = X_df[expected_features]
+    
+            lstm_input_size = self.lstm_model.lstm.input_size
+            if X_df.shape[1] < lstm_input_size:
+                print(f"[WARNING] LSTM向け特徴量が不足: {X_df.shape[1]} → {lstm_input_size} に補完")
+                for i in range(lstm_input_size - X_df.shape[1]):
+                    X_df[f'_pad_{i}'] = 0.0
+            elif X_df.shape[1] > lstm_input_size:
+                print(f"[WARNING] LSTM向け特徴量が多すぎます: {X_df.shape[1]} → {lstm_input_size} に切り詰め")
+                X_df = X_df.iloc[:, :lstm_input_size]
+    
+            # --- GAベース候補生成 ---
+            from genetic_algorithm import evolve_candidates
+            base_candidates = evolve_candidates(self, X_df, generations=10, population_size=num_candidates)
+    
+            print(f"[DEBUG] base_candidates type: {type(base_candidates)}, len: {len(base_candidates)}")
+            if base_candidates:
+                for i, item in enumerate(base_candidates[:3]):
+                    print(f"  candidate[{i}] types: {[type(x) for x in item]}")
+    
+            if not base_candidates or not isinstance(base_candidates, list) or len(base_candidates) < 1:
+                print("[ERROR] 候補生成に失敗しました（base_candidatesが空または不正）")
+                return None, None
+    
+            all_predictions = []
+            for idx, (lstm_vec, automl_vec, gan_vec, ppo_vec) in enumerate(base_candidates):
+                try:
+                    print(f"[DEBUG] Candidate index {idx}")
+                    print(f"  LSTM vec: {lstm_vec[:5]}")
+                    print(f"  AutoML vec: {automl_vec[:5]}")
+                    print(f"  GAN vec: {gan_vec[:5]}")
+                    print(f"  PPO vec: {ppo_vec[:5]}")
+    
+                    numbers, _ = predict_with_stacking(self.stacking_model, lstm_vec, automl_vec, gan_vec, ppo_vec)
+    
+                    flat_numbers = []
+                    for n in numbers:
+                        if isinstance(n, list):
+                            flat_numbers.extend(n)
+                        else:
+                            flat_numbers.append(n)
+    
+                    flat_numbers = list(set(np.round(flat_numbers).astype(int)))
+                    flat_numbers = [n for n in flat_numbers if 1 <= n <= 37]
+                    flat_numbers = sorted(flat_numbers)[:7]
+    
+                    if len(flat_numbers) != 7:
+                        print(f"[WARNING] 不正な候補: {flat_numbers}")
+                        continue
+    
+                    score_freq = sum(freq_score.get(n, 0) for n in flat_numbers)
+                    score_cycle = sum(cycle_score.get(n, 0) for n in flat_numbers)
+                    score_gnn = sum(gnn_scores[n - 1] for n in flat_numbers)
+                    score = score_freq - score_cycle + score_gnn
+    
+                    print(f"  Score (Freq={score_freq}, Cycle={score_cycle}, GNN={score_gnn}) → Total: {score}")
+                    if np.isnan(score) or np.isinf(score):
+                        print("[WARNING] スコアが NaN または Inf。スキップ")
+                        continue
+    
+                    confidence = 1.0 + (score / 500.0)
+                    all_predictions.append((flat_numbers, confidence))
+    
+                except Exception as e:
+                    print(f"[WARNING] stacking予測中にエラー (index {idx}): {e}")
+                    traceback.print_exc()
+                    continue
+    
+            print(f"[INFO] 総予測候補数: {len(all_predictions)} 件")
+    
+            if not all_predictions:
+                print("[WARNING] 有効な予測候補が生成されませんでした")
+                return None, None
+    
+            numbers_only = [pred[0] for pred in all_predictions]
+            confidence_scores = [pred[1] for pred in all_predictions]
+            return numbers_only, confidence_scores
+    
+        except Exception as e:
+            print(f"[ERROR] 予測中にエラー発生: {e}")
+            traceback.print_exc()
+            return None, None
 
 # 予測結果の評価
 def evaluate_predictions(predictions, actual_numbers):
