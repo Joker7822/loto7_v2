@@ -1,4 +1,5 @@
-# === CPU専用修正版 for test_with_gnn.py ===
+# === CPU専用修正版 for test_with_gnn.py（完全統合版）===
+# GPU非対応環境でもAutoGluon、GNN、LSTM等が正しく動作するように修正されたパッチ
 
 import os
 import numpy as np
@@ -7,10 +8,9 @@ import torch
 import onnxruntime
 from autogluon.tabular import TabularPredictor
 
-# ✅ デバイスを強制的に CPU に固定
+# ✅ 常にCPUを使用
 DEVICE = torch.device("cpu")
 
-# ✅ AutoGluon を CPU で強制的に学習
 def force_cpu_predictor_fit(X, y, model_index):
     df_train = pd.DataFrame(X)
     df_train['target'] = y[:, model_index]
@@ -27,7 +27,7 @@ def force_cpu_predictor_fit(X, y, model_index):
     )
     return predictor
 
-# ✅ ONNXモデル（LSTM）の読み込みをCPUで
+# ✅ ONNXモデル（LSTM）をCPUで読み込み
 onnx_session = None
 onnx_model_path = "lstm_model.onnx"
 if os.path.exists(onnx_model_path):
@@ -42,21 +42,17 @@ if os.path.exists(onnx_model_path):
 else:
     print("[WARNING] ONNXモデルが存在しません: スキップします")
 
-# ✅ GNN学習・推論をCPUで（past_dataが必要）
-gnn_model = None
-gnn_scores = np.zeros(37)
-
+# ✅ GNNモデルをCPUで構築・学習・推論
 try:
     from gnn_module import LotoGNN, build_loto_graph
 
-    # `past_data` がスコープ外なら渡すようにしてください
     if 'past_data' not in globals():
         raise ValueError("変数 'past_data' が定義されていません。GNNのグラフ生成に必要です。")
 
     graph_data = build_loto_graph(past_data).to(DEVICE)
     gnn_model = LotoGNN().to(DEVICE)
-
     optimizer = torch.optim.Adam(gnn_model.parameters(), lr=0.01)
+
     gnn_model.train()
     for epoch in range(100):
         optimizer.zero_grad()
@@ -67,10 +63,12 @@ try:
 
     print("[INFO] GNN モデルの学習完了（CPU）")
 
-    # GNN推論
+    # 推論実行
     gnn_model.eval()
     with torch.no_grad():
         gnn_scores = gnn_model(graph_data.x, graph_data.edge_index).squeeze().cpu().numpy()
 
 except Exception as e:
     print(f"[WARNING] GNN モデルをスキップしました: {e}")
+    gnn_model = None
+    gnn_scores = np.zeros(37)
