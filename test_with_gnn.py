@@ -607,7 +607,7 @@ class LotoPredictor:
         torch.save(self.diffusion_model.state_dict(), os.path.join(model_dir, "diffusion_model.pth"))
 
         print("[INFO] GNNモデルを訓練中")
-        from gnn_module import LotoGNN, build_cooccurrence_graph
+        from gnn_core import LotoGNN, build_cooccurrence_graph
         graph_data = build_cooccurrence_graph(data)
         self.gnn_model = LotoGNN()
         optimizer = torch.optim.Adam(self.gnn_model.parameters(), lr=0.01)
@@ -709,7 +709,7 @@ class LotoPredictor:
         # GAN
         gan_path = os.path.join(model_dir, "gan_model.pth")
         if os.path.exists(gan_path):
-            from gnn_module import LotoGAN
+            from gnn_core import LotoGAN
             self.gan_model = LotoGAN()
             self.gan_model.load_state_dict(torch.load(gan_path))
             self.gan_model.eval()
@@ -734,7 +734,7 @@ class LotoPredictor:
         # GNN
         gnn_path = os.path.join(model_dir, "gnn_model.pth")
         if os.path.exists(gnn_path):
-            from gnn_module import LotoGNN
+            from gnn_core import LotoGNN
             self.gnn_model = LotoGNN()
             self.gnn_model.load_state_dict(torch.load(gnn_path))
             self.gnn_model.eval()
@@ -855,7 +855,7 @@ class LotoPredictor:
                     append_prediction(np.sort(numbers), base_confidence=0.84)
 
             if self.gnn_model:
-                from gnn_module import build_cooccurrence_graph
+                from gnn_core import build_cooccurrence_graph
                 print("[INFO] GNN推論を開始")
                 graph_data = build_cooccurrence_graph(latest_data)
                 self.gnn_model.eval()
