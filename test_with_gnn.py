@@ -42,7 +42,7 @@ import asyncio
 import warnings
 import re
 import platform
-import gym
+import gymnasium as gym
 import sys
 import os
 import random
