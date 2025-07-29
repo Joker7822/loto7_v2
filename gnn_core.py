@@ -1,3 +1,4 @@
+# === 🔁 改良版 gnn_core.py ===
 import torch
 import torch.nn as nn
 from torch_geometric.data import Data
@@ -18,25 +19,24 @@ class LotoGNN(nn.Module):
         return x
 
 def build_cooccurrence_graph(df):
-    """
-    ロトの本数字から共起グラフを構築し、PyTorch Geometric 用に変換する
-    """
     edge_dict = {}
-    node_features = np.zeros((37, 37))  # one-hot ベース
+    node_features = np.zeros((37, 1))  # 出現回数ベースの特徴量
 
+    freq = np.zeros(37)
     for _, row in df.iterrows():
         numbers = row['本数字']
         if isinstance(numbers, str):
             numbers = [int(n) for n in numbers.strip("[]").split(",") if n.strip().isdigit()]
         for i in numbers:
             if 1 <= i <= 37:
-                node_features[i - 1][i - 1] = 1
+                freq[i - 1] += 1
         for i in range(len(numbers)):
             for j in range(i + 1, len(numbers)):
                 a, b = sorted([numbers[i], numbers[j]])
                 if 1 <= a <= 37 and 1 <= b <= 37:
                     edge_dict[(a - 1, b - 1)] = edge_dict.get((a - 1, b - 1), 0) + 1
 
+    node_features[:, 0] = freq / freq.max()
     edge_index = torch.tensor(list(edge_dict.keys()), dtype=torch.long).t().contiguous()
     x = torch.tensor(node_features, dtype=torch.float32)
 
