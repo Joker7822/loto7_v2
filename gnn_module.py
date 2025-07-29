@@ -44,7 +44,7 @@ else:
 
 # ✅ GNNモデルをCPUで構築・学習・推論
 try:
-    from gnn_module import LotoGNN, build_loto_graph
+    from gnn_core import LotoGNN, build_cooccurrence_graph
 
     if 'past_data' not in globals():
         raise ValueError("変数 'past_data' が定義されていません。GNNのグラフ生成に必要です。")
