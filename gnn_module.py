@@ -1,12 +1,16 @@
 # === CPU専用修正版 for test_with_gnn.py ===
-# 以下のコードは、GPU環境が使えない環境でもAutoGluon、GNN、LSTM等が正しく動作するように修正されたパッチです。
 
+import os
+import numpy as np
+import pandas as pd
 import torch
+import onnxruntime
 from autogluon.tabular import TabularPredictor
 
-# ✅ device を常に CPU に強制
+# ✅ デバイスを強制的に CPU に固定
 DEVICE = torch.device("cpu")
 
+# ✅ AutoGluon を CPU で強制的に学習
 def force_cpu_predictor_fit(X, y, model_index):
     df_train = pd.DataFrame(X)
     df_train['target'] = y[:, model_index]
@@ -23,38 +27,50 @@ def force_cpu_predictor_fit(X, y, model_index):
     )
     return predictor
 
-# ✅ train_model 内で device を CPU に固定
-device = DEVICE
+# ✅ ONNXモデル（LSTM）の読み込みをCPUで
+onnx_session = None
+onnx_model_path = "lstm_model.onnx"
+if os.path.exists(onnx_model_path):
+    try:
+        onnx_session = onnxruntime.InferenceSession(
+            onnx_model_path,
+            providers=['CPUExecutionProvider']
+        )
+        print("[INFO] ONNX LSTM モデルをCPUで読み込みました")
+    except Exception as e:
+        print(f"[WARNING] ONNXモデルの読み込みに失敗しました: {e}")
+else:
+    print("[WARNING] ONNXモデルが存在しません: スキップします")
 
-# ✅ ONNX provider
-import onnxruntime
-onnx_session = onnxruntime.InferenceSession(
-    "lstm_model.onnx",
-    providers=['CPUExecutionProvider']
-)
+# ✅ GNN学習・推論をCPUで（past_dataが必要）
+gnn_model = None
+gnn_scores = np.zeros(37)
 
-# ✅ GNNの学習部分で GPU を使わないようにする
 try:
     from gnn_module import LotoGNN, build_loto_graph
-    graph_data = build_loto_graph(past_data)
+
+    # `past_data` がスコープ外なら渡すようにしてください
+    if 'past_data' not in globals():
+        raise ValueError("変数 'past_data' が定義されていません。GNNのグラフ生成に必要です。")
+
+    graph_data = build_loto_graph(past_data).to(DEVICE)
     gnn_model = LotoGNN().to(DEVICE)
+
     optimizer = torch.optim.Adam(gnn_model.parameters(), lr=0.01)
     gnn_model.train()
     for epoch in range(100):
         optimizer.zero_grad()
-        out = gnn_model(graph_data.to(DEVICE))
+        out = gnn_model(graph_data.x, graph_data.edge_index)
         loss = out.mean()
         loss.backward()
         optimizer.step()
-    print("[INFO] GNN モデルの学習完了（CPU）")
-except Exception as e:
-    print(f"[WARNING] GNN モデルをスキップ: {e}")
-    gnn_model = None
 
-# ✅ GNN の予測部分（予測時も CPU）
-if gnn_model:
+    print("[INFO] GNN モデルの学習完了（CPU）")
+
+    # GNN推論
     gnn_model.eval()
     with torch.no_grad():
-        gnn_scores = gnn_model(graph_data.to(DEVICE)).squeeze().cpu().numpy()
-else:
-    gnn_scores = np.zeros(37)  # 予測できない場合はスコアをゼロに
+        gnn_scores = gnn_model(graph_data.x, graph_data.edge_index).squeeze().cpu().numpy()
+
+except Exception as e:
+    print(f"[WARNING] GNN モデルをスキップしました: {e}")
