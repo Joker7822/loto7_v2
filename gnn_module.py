@@ -49,7 +49,7 @@ try:
     if 'past_data' not in globals():
         raise ValueError("変数 'past_data' が定義されていません。GNNのグラフ生成に必要です。")
 
-    graph_data = build_loto_graph(past_data).to(DEVICE)
+    graph_data = build_cooccurrence_graph(past_data).to(DEVICE)  # ← こちらが正しいはず
     gnn_model = LotoGNN().to(DEVICE)
     optimizer = torch.optim.Adam(gnn_model.parameters(), lr=0.01)
 
