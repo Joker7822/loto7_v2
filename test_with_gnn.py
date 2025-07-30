@@ -340,30 +340,20 @@ def load_self_predictions(file_path="self_predictions.csv", min_match_threshold=
         return None
 
 def evaluate_self_predictions(self_predictions, true_data):
-    """
-    自己予測リストと本物データを比較して一致数を評価
-    :param self_predictions: [[5,12,17,22,30,34,37], ...]
-    :param true_data: 過去の本物本数字データ（data['本数字'].tolist()）
-    :return: 各自己予測に対応する最大一致数リスト
-    """
     scores = []
-    true_sets = [set(nums) for nums in true_data]
+    true_sets = [set(t.tolist() if isinstance(t, np.ndarray) else t) for t in true_data]
 
     for pred in self_predictions:
-        # pred が ndarray なら list に変換
-        if isinstance(pred, np.ndarray):
-            pred = pred.tolist()
-        pred_set = set(pred)
+        pred_list = pred.tolist() if isinstance(pred, np.ndarray) else pred
+        pred_set = set(pred_list)
 
         max_match = 0
         for true_set in true_sets:
             match = len(pred_set & true_set)
-            if match > max_match:
-                max_match = match
+            max_match = max(max_match, match)
         scores.append(max_match)
 
     return scores
-
 
 def update_features_based_on_results(data, accuracy_results):
     """過去の予測結果と実際の結果の比較から特徴量を更新"""
@@ -891,11 +881,13 @@ class LotoPredictor:
         
 def evaluate_predictions(predictions, actual_numbers):
     matches = []
-    actual_set = set(actual_numbers.tolist() if isinstance(actual_numbers, np.ndarray) else actual_numbers)
+    actual_list = actual_numbers.tolist() if isinstance(actual_numbers, np.ndarray) else actual_numbers
+    actual_set = set(actual_list)
 
     for pred in predictions:
-        pred_numbers = pred[0].tolist() if isinstance(pred[0], np.ndarray) else pred[0]
-        match_count = len(set(pred_numbers) & actual_set)
+        pred_arr = pred[0]
+        pred_list = pred_arr.tolist() if isinstance(pred_arr, np.ndarray) else pred_arr
+        match_count = len(set(pred_list) & actual_set)
         matches.append(match_count)
 
     return {
@@ -903,6 +895,7 @@ def evaluate_predictions(predictions, actual_numbers):
         'avg_matches': np.mean(matches),
         'predictions_with_matches': list(zip(predictions, matches))
     }
+
 
 # 追加: 最新の抽せん日を取得する関数
 official_url = "https://www.takarakuji-official.jp/ec/loto7/?kujiprdShbt=61&knyschm=0"
