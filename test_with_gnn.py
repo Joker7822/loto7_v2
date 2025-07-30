@@ -891,14 +891,19 @@ class LotoPredictor:
         
 def evaluate_predictions(predictions, actual_numbers):
     matches = []
+    actual_set = set(actual_numbers.tolist() if isinstance(actual_numbers, np.ndarray) else actual_numbers)
+
     for pred in predictions:
-        match_count = len(set(pred[0]) & set(actual_numbers))
+        pred_numbers = pred[0].tolist() if isinstance(pred[0], np.ndarray) else pred[0]
+        match_count = len(set(pred_numbers) & actual_set)
         matches.append(match_count)
+
     return {
         'max_matches': max(matches),
         'avg_matches': np.mean(matches),
         'predictions_with_matches': list(zip(predictions, matches))
     }
+
 # 追加: 最新の抽せん日を取得する関数
 official_url = "https://www.takarakuji-official.jp/ec/loto7/?kujiprdShbt=61&knyschm=0"
 
