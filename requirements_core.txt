@@ -11,4 +11,4 @@ onnx
 sentence_transformers
 pyro-ppl
 pytorch_tabnet
-shimmy>=2.0
+shimmy
