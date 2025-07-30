@@ -341,11 +341,25 @@ def load_self_predictions(file_path="self_predictions.csv", min_match_threshold=
 
 def evaluate_self_predictions(self_predictions, true_data):
     scores = []
+    # true_data 内の各要素が ndarray の場合に list へ変換してから set にする
     true_sets = [set(t.tolist() if isinstance(t, np.ndarray) else t) for t in true_data]
 
     for pred in self_predictions:
-        pred_list = pred.tolist() if isinstance(pred, np.ndarray) else pred
-        pred_set = set(pred_list)
+        # pred が (numbers, confidence) のタプル形式か、単なる ndarray かを判定
+        if isinstance(pred, tuple) and isinstance(pred[0], (np.ndarray, list)):
+            pred_numbers = pred[0]
+        else:
+            pred_numbers = pred  # 万一 pred 自体が list の場合に備える
+
+        # ndarray であれば list に変換
+        if isinstance(pred_numbers, np.ndarray):
+            pred_numbers = pred_numbers.tolist()
+
+        try:
+            pred_set = set(pred_numbers)
+        except TypeError as e:
+            print(f"[ERROR] set変換エラー: {e} | pred_numbers = {pred_numbers}")
+            continue
 
         max_match = 0
         for true_set in true_sets:
@@ -354,6 +368,7 @@ def evaluate_self_predictions(self_predictions, true_data):
         scores.append(max_match)
 
     return scores
+
 
 def update_features_based_on_results(data, accuracy_results):
     """過去の予測結果と実際の結果の比較から特徴量を更新"""
