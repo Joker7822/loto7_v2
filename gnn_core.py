@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 class LotoGNN(nn.Module):
-    def __init__(self, input_dim=37, hidden_dim=64, output_dim=37):
+    def __init__(self, input_dim=1, hidden_dim=64, output_dim=37):  # ★ input_dim=1 に変更
         super(LotoGNN, self).__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.relu = nn.ReLU()
