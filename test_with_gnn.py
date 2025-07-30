@@ -350,7 +350,11 @@ def evaluate_self_predictions(self_predictions, true_data):
     true_sets = [set(nums) for nums in true_data]
 
     for pred in self_predictions:
+        # pred が ndarray なら list に変換
+        if isinstance(pred, np.ndarray):
+            pred = pred.tolist()
         pred_set = set(pred)
+
         max_match = 0
         for true_set in true_sets:
             match = len(pred_set & true_set)
@@ -359,6 +363,7 @@ def evaluate_self_predictions(self_predictions, true_data):
         scores.append(max_match)
 
     return scores
+
 
 def update_features_based_on_results(data, accuracy_results):
     """過去の予測結果と実際の結果の比較から特徴量を更新"""
