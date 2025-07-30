@@ -11,4 +11,5 @@ onnx
 sentence_transformers
 pyro-ppl
 pytorch_tabnet
-shimmy
+shimmy==2.0
+gymnasium
