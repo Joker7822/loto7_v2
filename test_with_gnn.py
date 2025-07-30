@@ -896,13 +896,24 @@ class LotoPredictor:
         
 def evaluate_predictions(predictions, actual_numbers):
     matches = []
+
+    # actual_numbers を list に変換してから set にする
     actual_list = actual_numbers.tolist() if isinstance(actual_numbers, np.ndarray) else actual_numbers
     actual_set = set(actual_list)
 
     for pred in predictions:
+        # pred が (numbers, confidence) の形式であると仮定
         pred_arr = pred[0]
+
+        # ndarray の場合 list に変換
         pred_list = pred_arr.tolist() if isinstance(pred_arr, np.ndarray) else pred_arr
-        match_count = len(set(pred_list) & actual_set)
+
+        try:
+            match_count = len(set(pred_list) & actual_set)
+        except TypeError as e:
+            print(f"[ERROR] set変換失敗: {e} | pred_list = {pred_list}")
+            match_count = 0
+
         matches.append(match_count)
 
     return {
@@ -910,7 +921,6 @@ def evaluate_predictions(predictions, actual_numbers):
         'avg_matches': np.mean(matches),
         'predictions_with_matches': list(zip(predictions, matches))
     }
-
 
 # 追加: 最新の抽せん日を取得する関数
 official_url = "https://www.takarakuji-official.jp/ec/loto7/?kujiprdShbt=61&knyschm=0"
