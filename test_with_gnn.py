@@ -1,3 +1,9 @@
+
+def add_noise_to_features(X, noise_level=0.02):
+    import numpy as np
+    noise = np.random.normal(loc=0.0, scale=noise_level, size=X.shape)
+    return X + noise
+
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -60,6 +66,7 @@ import traceback
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import tensorflow as tf
 from gym.utils import seeding
+import time
 
 # Windows環境のイベントループポリシーを設定
 if platform.system() == "Windows":
@@ -1219,7 +1226,7 @@ def main_with_improved_predictions():
                     print("[ERROR] 予測に失敗したため処理を中断します。")
                     return
 
-                verified_predictions = list(zip(predictions, confidence_scores)), history_data)
+                verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), history_data)
 
                 save_self_predictions(verified_predictions)
 
@@ -1243,7 +1250,7 @@ def main_with_improved_predictions():
                 print("[ERROR] 予測に失敗したため処理を中断します。")
                 return
 
-            verified_predictions = list(zip(predictions, confidence_scores)), history_data)
+            verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), history_data)
 
             save_self_predictions(verified_predictions)
 
