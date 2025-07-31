@@ -840,9 +840,12 @@ class LotoPredictor:
 
             if self.ppo_model:
                 for i in range(num_candidates):
-                    set_global_seed(300 + i)
+                    set_global_seed(random.randint(1000, 999999))  # 🔁 シードを毎回変更
                     obs = np.zeros(37, dtype=np.float32)
-                    action, _ = self.ppo_model.predict(obs, deterministic=True)
+                
+                    # 多様性確保のため deterministic=False に変更
+                    action, _ = self.ppo_model.predict(obs, deterministic=False)
+                
                     numbers = np.argsort(action)[-7:] + 1
                     append_prediction(np.sort(numbers), base_confidence=0.85)
 
@@ -884,11 +887,35 @@ class LotoPredictor:
             if self.bnn_model:
                 from bnn_module import predict_bayesian_regression
                 print("[INFO] BNNモデルによる予測を実行中")
-                bnn_preds = predict_bayesian_regression(self.bnn_model, self.bnn_guide, X, samples=30)
-                for pred in bnn_preds:
-                    numbers = np.round(pred).astype(int)
-                    numbers = np.clip(numbers, 1, 37)
-                    append_prediction(sorted([int(n) for sub in numbers for n in (sub if isinstance(sub, (list, np.ndarray)) else [sub])]), base_confidence=0.83)
+            
+                for i in range(num_candidates):
+                    set_global_seed(random.randint(1000, 999999))  # 🔁 毎回異なるシードで予測
+            
+                    try:
+                        bnn_preds = predict_bayesian_regression(
+                            self.bnn_model,
+                            self.bnn_guide,
+                            X,
+                            samples=1  # 🔁 1サンプルずつ個別生成
+                        )
+            
+                        for pred in bnn_preds:
+                            pred = np.array(pred).flatten()
+                            numbers = np.round(pred).astype(int)
+                            numbers = np.clip(numbers, 1, 37)
+                            numbers = np.unique(numbers)
+            
+                            # 必要なら不足分をランダム補完（BNNは被りが出やすいため）
+                            while len(numbers) < 7:
+                                add = random.randint(1, 37)
+                                if add not in numbers:
+                                    numbers = np.append(numbers, add)
+            
+                            numbers = np.sort(numbers[:7])  # 念のため7個制限
+                            append_prediction(numbers, base_confidence=0.83)
+            
+                    except Exception as e:
+                        print(f"[WARNING] BNN予測中にエラー発生: {e}")
 
             print(f"[INFO] 総予測候補数（全モデル統合）: {len(all_predictions)}件")
             numbers_only = [pred[0] for pred in all_predictions]
