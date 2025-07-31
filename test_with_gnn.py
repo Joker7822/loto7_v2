@@ -828,10 +828,15 @@ class LotoPredictor:
 
             if self.gan_model:
                 for i in range(num_candidates):
-                    set_global_seed(200 + i)
+                    set_global_seed(int(time.time() * 1000) % 100000 + i)  # 毎回異なるシード
                     gan_sample = self.gan_model.generate_samples(1)[0]
-                    numbers = np.argsort(gan_sample)[-7:] + 1
-                    append_prediction(np.sort(numbers), base_confidence=0.8)
+                
+                    # ★ 数字にランダム性を追加（例：温度スケーリング）
+                    logits = gan_sample / 0.7  # "温度" を下げるとシャープに、高くすると多様に
+                    probs = logits / logits.sum()
+                    numbers = np.random.choice(37, 7, replace=False, p=probs)
+                    
+                    append_prediction(np.sort(numbers + 1), base_confidence=0.8)
 
             if self.ppo_model:
                 for i in range(num_candidates):
@@ -843,16 +848,26 @@ class LotoPredictor:
 
             if self.diffusion_model:
                 from diffusion_module import sample_diffusion_ddpm
-                samples = sample_diffusion_ddpm(
-                    self.diffusion_model,
-                    self.diffusion_betas,
-                    self.diffusion_alphas_cumprod,
-                    dim=37,
-                    num_samples=num_candidates
-                )
-                for vec in samples:
-                    numbers = np.argsort(vec)[-7:] + 1
-                    append_prediction(np.sort(numbers), base_confidence=0.84)
+                print("[INFO] Diffusion モデルによる生成を開始")
+            
+                for i in range(num_candidates):
+                    set_global_seed(random.randint(1000, 999999))  # 🔁 乱数シードを毎回変える
+            
+                    try:
+                        sample = sample_diffusion_ddpm(
+                            self.diffusion_model,
+                            self.diffusion_betas,
+                            self.diffusion_alphas_cumprod,
+                            dim=37,
+                            num_samples=1  # ★ 1件ずつ生成して多様性を確保
+                        )[0]
+            
+                        numbers = np.argsort(sample)[-7:] + 1
+                        numbers = np.sort(numbers)
+                        append_prediction(numbers, base_confidence=0.84)
+            
+                    except Exception as e:
+                        print(f"[WARNING] Diffusion 生成中にエラー: {e}")
 
             if self.gnn_model:
                 from gnn_core import build_cooccurrence_graph
