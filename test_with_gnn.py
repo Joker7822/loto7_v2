@@ -870,7 +870,7 @@ class LotoPredictor:
                         numbers = np.sort(numbers)
                         score = sum(freq_score.get(n, 0) for n in numbers) - sum(cycle_score.get(n, 0) for n in numbers)
                         confidence = 0.83 + (score / 500.0)
-                        all_predictions.append((numbers, confidence))
+                        all_predictions.append((numbers.tolist(), confidence)) 
 
             if hasattr(self, "bnn_model") and self.bnn_model is not None:
                 from bnn_module import predict_bayesian_regression
