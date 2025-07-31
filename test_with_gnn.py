@@ -1177,7 +1177,7 @@ def main_with_improved_predictions():
                     print("[ERROR] 予測に失敗したため処理を中断します。")
                     return
 
-                verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), history_data)
+                verified_predictions = list(zip(predictions, confidence_scores)), history_data)
 
                 save_self_predictions(verified_predictions)
 
@@ -1201,7 +1201,7 @@ def main_with_improved_predictions():
                 print("[ERROR] 予測に失敗したため処理を中断します。")
                 return
 
-            verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), history_data)
+            verified_predictions = list(zip(predictions, confidence_scores)), history_data)
 
             save_self_predictions(verified_predictions)
 
@@ -1327,14 +1327,24 @@ def verify_predictions(predictions, historical_data, top_k=5):
 
     def get_high_match_templates(historical_df, match_threshold=6):
         """過去の6本一致テンプレートを抽出"""
-        result = []
+        unique_sets = set()
         rows = historical_df['本数字'].apply(lambda x: set(map(int, x)) if isinstance(x, list) else set())
-
         for i in range(len(rows)):
             for j in range(i + 1, len(rows)):
-                if len(rows[i] & rows[j]) >= match_threshold:
-                    result.append(rows[i])
-        return result
+                intersect = rows[i] & rows[j]
+                if len(intersect) >= match_threshold:
+                    unique_sets.add(tuple(sorted(intersect)))
+        return [set(t) for t in unique_sets]
+
+    def penalize_overused_numbers(preds, threshold=0.05):
+        """頻出数字を含む予測の信頼度を下げる"""
+        all_nums = [n for pred in preds for n in pred[0]]
+        freq = pd.Series(all_nums).value_counts(normalize=True)
+        penalized = []
+        for nums, conf in preds:
+            penalty = sum(freq.get(n, 0) > threshold for n in nums) * 0.1
+            penalized.append((nums, conf * (1 - penalty)))
+        return penalized
 
     print("[INFO] 予測候補をフィルタリング中...")
 
@@ -1344,10 +1354,12 @@ def verify_predictions(predictions, historical_data, top_k=5):
         for pred, conf in predictions
         if check_number_constraints(pred)
     ]
-
     if not valid_predictions:
         print("[WARNING] 有効な予測がありません")
         return []
+
+    # --- 頻出数字ペナルティ ---
+    valid_predictions = penalize_overused_numbers(valid_predictions)
 
     # --- 信頼度順に100件まで絞る ---
     valid_predictions.sort(key=lambda x: x[1], reverse=True)
@@ -1362,7 +1374,7 @@ def verify_predictions(predictions, historical_data, top_k=5):
                 continue
             combined = used_numbers | set(nums)
             coverage_score = len(combined)
-            score = (coverage_score * 0.7) + (conf * 0.3)
+            score = (coverage_score * 0.8) + (conf * 0.2)  # ⬅ カバレッジ重視に調整
             if score > best_score:
                 best_score, best_idx = score, idx
         if best_idx == -1:
@@ -1379,18 +1391,24 @@ def verify_predictions(predictions, historical_data, top_k=5):
         )
         templates = get_high_match_templates(historical_data)
 
-        for _ in range(min(2, len(templates))):
+        added = 0
+        tried = set()
+        while added < 2 and len(tried) < len(templates):
             base = set(random.choice(templates))
+            if tuple(sorted(base)) in tried:
+                continue
+            tried.add(tuple(sorted(base)))
+
             available = list(set(range(1, 38)) - base)
-            if available:
-                removed = random.choice(list(base))
-                added = random.choice(available)
-                base.remove(removed)
-                base.add(added)
+            if len(base) >= 6 and available:
+                base = set(random.sample(base, 6))  # 6個だけ残す
+                base.add(random.choice(available))  # 1個追加して7個に
                 combo = np.sort(list(base))
                 selected.append((combo, 1.0))
-        if templates:
-            print("[INFO] 強制6本構成を追加しました:", len(templates), "候補より")
+                added += 1
+
+        if added > 0:
+            print(f"[INFO] 強制6本構成を {added} 件追加しました")
         else:
             print("[INFO] 強制テンプレート構成は見つかりませんでした")
     except Exception as e:
@@ -1398,6 +1416,7 @@ def verify_predictions(predictions, historical_data, top_k=5):
 
     print(f"[INFO] 最終選択された予測数: {len(selected)}")
     return selected
+
 
 def extract_strong_features(evaluation_df, feature_df):
     """
