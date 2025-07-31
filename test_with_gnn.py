@@ -67,6 +67,7 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import tensorflow as tf
 from gym.utils import seeding
 import time
+import subprocess
 
 # Windows環境のイベントループポリシーを設定
 if platform.system() == "Windows":
@@ -85,6 +86,20 @@ def set_global_seed(seed=42):
     # For deterministic behavior
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+def git_commit_and_push(file_path, message):
+    try:
+        subprocess.run(["git", "add", file_path], check=True)
+        diff = subprocess.run(["git", "diff", "--cached", "--quiet"])
+        if diff.returncode != 0:
+            subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
+            subprocess.run(["git", "config", "--global", "user.email", "github-actions@github.com"], check=True)
+            subprocess.run(["git", "commit", "-m", message], check=True)
+            subprocess.run(["git", "push"], check=True)
+        else:
+            print(f"[INFO] No changes in {file_path}")
+    except Exception as e:
+        print(f"[WARNING] Git commit/push failed: {e}")
 
 def get_valid_num_heads(embed_dim, max_heads=8):
     for h in reversed(range(1, max_heads + 1)):
