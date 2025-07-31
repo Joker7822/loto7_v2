@@ -1638,6 +1638,8 @@ def bulk_predict_all_past_draws():
         verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), train_data)
         save_self_predictions(verified_predictions)
         save_predictions_to_csv(verified_predictions, test_date)
+        # ✅ Git に即時 push
+        git_commit_and_push("loto7_predictions.csv", "Auto update loto7_predictions.csv [skip ci]")
 
         model_dir = f"models/{test_date_str}"
         os.makedirs(model_dir, exist_ok=True)
