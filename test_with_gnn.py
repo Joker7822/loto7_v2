@@ -1,9 +1,3 @@
-
-def add_noise_to_features(X, noise_level=0.02):
-    import numpy as np
-    noise = np.random.normal(loc=0.0, scale=noise_level, size=X.shape)
-    return X + noise
-
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -106,6 +100,11 @@ def get_valid_num_heads(embed_dim, max_heads=8):
         if embed_dim % h == 0:
             return h
     return 1
+
+def add_noise_to_features(X, noise_level=0.02):
+    import numpy as np
+    noise = np.random.normal(loc=0.0, scale=noise_level, size=X.shape)
+    return X + noise
     
 class LotoGAN(nn.Module):
     def __init__(self, noise_dim=100):
