@@ -4,10 +4,6 @@ import pandas as pd
 import os
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
-from numbers3_predictor import (
-    main_with_improved_predictions,
-    evaluate_and_summarize_predictions
-)
 
 # ========= ファイル定義 =========
 LOG_FILE = "last_prediction_log.txt"
@@ -39,7 +35,7 @@ def display_scraping_log():
         st.text_area("Log Output", log_content, height=300)
 
 # ========= UI =========
-st.markdown("<h1 style='color:#FF4B4B;'>🎯 Numbers3 予測AI</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:#FF4B4B;'>🎯 loto7 予測AI</h1>", unsafe_allow_html=True)
 
 menu = st.sidebar.radio("📌 メニュー", [
     "🧠 最新予測表示",
@@ -67,7 +63,7 @@ if "最新予測" in menu:
         except Exception as e:
             st.error(f"❌ 予測CSV読み込みエラー: {e}")
     else:
-        st.warning("⚠️ Numbers3_predictions.csv が見つかりません。")
+        st.warning("⚠️ loto7_predictions.csv が見つかりません。")
 
 # 予測評価
 elif "予測評価" in menu:
@@ -118,7 +114,7 @@ elif "分析グラフ" in menu:
 elif "予測結果" in menu:
     st.markdown("## 🧾 最新の予測結果（過去10件）")
     if os.path.exists("loto7_predictions.csv"):
-        pred_df = pd.read_csv("Numbers3_predictions.csv")
+        pred_df = pd.read_csv("loto7_predictions.csv")
         st.dataframe(pred_df.sort_values("抽せん日", ascending=False).head(10), use_container_width=True)
     else:
         st.warning("⚠️ 予測結果がありません。まずは GitHub へ CSV をアップロードしてください。")
