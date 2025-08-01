@@ -1,8 +1,6 @@
 import streamlit as st
 st.set_page_config(page_title="Numbers3予測AI", layout="wide")  # 必ず最上部！
-
 import pandas as pd
-import matplotlib.pyplot as plt
 import os
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
