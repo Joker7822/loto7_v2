@@ -1556,6 +1556,23 @@ def calculate_number_frequencies(dataframe):
     freq = pd.Series(all_numbers).value_counts().to_dict()
     return freq
 
+def calculate_number_cycle_score(dataframe):
+    """
+    数字ごとの未出現期間（周期）に基づいたスコアを計算する。
+    直近で出ていないほど高いスコアを付ける。
+    """
+    last_seen = {}
+    today_index = len(dataframe)
+
+    for idx, row in dataframe[::-1].iterrows():
+        for number in row['本数字']:
+            if number not in last_seen:
+                last_seen[number] = today_index - idx  # 今何回分前に出たか
+
+    # 最大未出周期 = 高スコアとするため反転（例: 未出日数が長いほど高得点）
+    max_cycle = max(last_seen.values()) if last_seen else 1
+    score = {n: last_seen.get(n, max_cycle) for n in range(1, 38)}
+    return score
 
         
 def bulk_predict_all_past_draws():
