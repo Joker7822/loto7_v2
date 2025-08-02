@@ -1647,6 +1647,74 @@ def bulk_predict_all_past_draws():
         try:
             def save_if_exists(obj, save_fn, path):
                 if obj:
+def bulk_predict_all_past_draws():
+    set_global_seed(42)
+    df = pd.read_csv("loto7.csv")
+    df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors='coerce')
+    df = df.sort_values("抽せん日").reset_index(drop=True)
+    print("[INFO] 抽せんデータ読み込み完了:", len(df), "件")
+
+    pred_file = "loto7_predictions.csv"
+
+    skip_dates = set()
+    if os.path.exists(pred_file):
+        try:
+            pred_df = pd.read_csv(pred_file, encoding='utf-8-sig')
+            if "抽せん日" in pred_df.columns:
+                skip_dates = set(pd.to_datetime(pred_df["抽せん日"], errors='coerce').dropna().dt.strftime("%Y-%m-%d"))
+        except Exception as e:
+            print(f"[WARNING] 予測ファイル読み込みエラー: {e}")
+    else:
+        with open(pred_file, "w", encoding="utf-8-sig") as f:
+            f.write("抽せん日,予測1,信頼度1,予測2,信頼度2,予測3,信頼度3,予測4,信頼度4,予測5,信頼度5\n")
+
+    predictor_cache = {}
+
+    for i in range(10, len(df)):
+        set_global_seed(1000 + i)
+
+        test_date = df.iloc[i]["抽せん日"]
+        test_date_str = test_date.strftime("%Y-%m-%d")
+
+        if test_date_str in skip_dates:
+            print(f"[INFO] 既に予測済み: {test_date_str} → スキップ")
+            continue
+
+        print(f"\n=== {test_date_str} の予測を開始 ===")
+        train_data = df.iloc[:i].copy()
+        latest_data = df.iloc[i-10:i].copy()
+
+        X, _, _ = preprocess_data(train_data)
+        if X is None:
+            print(f"[WARNING] {test_date_str} の学習データが無効です")
+            continue
+
+        input_size = X.shape[1]
+
+        if i % 50 == 0 or input_size not in predictor_cache:
+            print(f"[INFO] モデル再学習: {test_date_str} 時点")
+            predictor = LotoPredictor(input_size, 128, 7)
+            predictor.train_model(train_data)
+            predictor_cache[input_size] = predictor
+        else:
+            predictor = predictor_cache[input_size]
+
+        predictions, confidence_scores = predictor.predict(latest_data)
+        if predictions is None:
+            print(f"[ERROR] {test_date_str} の予測に失敗しました")
+            continue
+
+        verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), train_data)
+        save_self_predictions(verified_predictions)
+        save_predictions_to_csv(verified_predictions, test_date)
+        git_commit_and_push("loto7_predictions.csv", "Auto update loto7_predictions.csv [skip ci]")
+
+        model_dir = f"models/{test_date_str}"
+        os.makedirs(model_dir, exist_ok=True)
+
+        try:
+            def save_if_exists(obj, save_fn, path):
+                if obj:
                     save_fn(path)
                     print(f"[INFO] 保存完了: {path}")
 
@@ -1680,8 +1748,43 @@ def bulk_predict_all_past_draws():
 
         evaluate_prediction_accuracy_with_bonus("loto7_predictions.csv", "loto7.csv")
 
-    print("\n=== 一括予測とモデル保存・評価が完了しました ===")
+    # === 🆕 未来1回分の予測を追加 ===
+    try:
+        future_date = df["抽せん日"].max() + pd.Timedelta(days=7)
+        future_date_str = future_date.strftime("%Y-%m-%d")
 
+        if future_date_str not in skip_dates:
+            print(f"\n=== {future_date_str} の未来予測を開始 ===")
+            latest_data = df.tail(10).copy()
+            train_data = df.copy()
+
+            X, _, _ = preprocess_data(train_data)
+            if X is None:
+                print("[WARNING] 未来予測用の学習データが無効です")
+            else:
+                input_size = X.shape[1]
+                if input_size not in predictor_cache:
+                    predictor = LotoPredictor(input_size, 128, 7)
+                    predictor.train_model(train_data)
+                    predictor_cache[input_size] = predictor
+                else:
+                    predictor = predictor_cache[input_size]
+
+                predictions, confidence_scores = predictor.predict(latest_data)
+                if predictions is not None:
+                    verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), train_data)
+                    save_self_predictions(verified_predictions)
+                    save_predictions_to_csv(verified_predictions, future_date)
+                    git_commit_and_push("loto7_predictions.csv", "Auto predict future draw [skip ci]")
+                    print(f"[INFO] 未来予測（{future_date_str}）完了")
+        else:
+            print(f"[INFO] 未来予測（{future_date_str}）は既に実行済みです")
+
+    except Exception as e:
+        print(f"[WARNING] 未来予測中にエラー発生: {e}")
+        traceback.print_exc()
+
+    print("\n=== 一括予測とモデル保存・評価が完了しました ===")
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.set_start_method('spawn', force=True)
