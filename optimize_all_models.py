@@ -1,4 +1,3 @@
-
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -29,6 +28,7 @@ def optimize_autogluon(X, y, model_index):
         predictor = TabularPredictor(label='target', verbosity=0).fit(
             df,
             hyperparameters=params,
+            presets="best_quality",
             time_limit=300,
         )
         return predictor.leaderboard(silent=True).iloc[0]['score_val']
@@ -53,8 +53,8 @@ def optimize_tabnet(X, y):
             eval_set=[(X, y)],
             max_epochs=50,
             patience=10,
-            batch_size=128,
-            virtual_batch_size=64
+            batch_size=trial.suggest_categorical("batch_size", [64, 128]),
+            virtual_batch_size=trial.suggest_categorical("virtual_batch_size", [32, 64])
         )
         preds = model.predict(X)
         return -np.mean((y - preds) ** 2)
@@ -69,7 +69,7 @@ def optimize_diffusion(data_bin):
         epochs = trial.suggest_int("epochs", 500, 2000)
 
         model, _, _ = train_diffusion_ddpm(data_bin, epochs=epochs, batch_size=batch_size)
-        return -epochs / batch_size
+        return -epochs / batch_size  # 仮スコア（改善余地あり）
 
     study = optuna.create_study(direction="minimize")
     study.optimize(objective, n_trials=5)
