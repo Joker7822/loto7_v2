@@ -1,3 +1,21 @@
+
+# === Optunaで最適化されたパラメータの読み込み ===
+import os
+import json
+
+optuna_dir = "optuna_results"
+optimized_params = {}
+
+if os.path.exists(optuna_dir):
+    for filename in os.listdir(optuna_dir):
+        if filename.endswith(".json"):
+            with open(os.path.join(optuna_dir, filename), "r") as f:
+                optimized_params[filename.replace(".json", "")] = json.load(f)
+    print(f"[INFO] Optuna最適化パラメータを適用しました: {list(optimized_params.keys())}")
+else:
+    print("[INFO] 最適化パラメータディレクトリが見つかりませんでした。デフォルト設定で実行します。")
+
+
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
