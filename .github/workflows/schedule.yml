@@ -73,7 +73,7 @@ jobs:
           fi
 
       - name: Run predictor script
-        run: xvfb-run -a python lottery_prediction.py
+        run: xvfb-run -a python run_model_evolution.py
 
       - name: Commit and push prediction results if changed
         env:
