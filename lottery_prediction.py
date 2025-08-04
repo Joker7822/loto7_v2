@@ -1,7 +1,26 @@
+
+# === Optunaで最適化されたパラメータの読み込み ===
+import os
+import json
+
+optuna_dir = "optuna_results"
+optimized_params = {}
+
+if os.path.exists(optuna_dir):
+    for filename in os.listdir(optuna_dir):
+        if filename.endswith(".json"):
+            with open(os.path.join(optuna_dir, filename), "r") as f:
+                optimized_params[filename.replace(".json", "")] = json.load(f)
+    print(f"[INFO] Optuna最適化パラメータを適用しました: {list(optimized_params.keys())}")
+else:
+    print("[INFO] 最適化パラメータディレクトリが見つかりませんでした。デフォルト設定で実行します。")
+
+
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import numpy as np
+import stat
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -53,6 +72,14 @@ import streamlit as st
 from autogluon.tabular import TabularPredictor
 import torch.backends.cudnn
 from datetime import datetime 
+from itertools import combinations
+import shutil
+import traceback
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+import tensorflow as tf
+from gym.utils import seeding
+import time
+import subprocess
 
 # Windows環境のイベントループポリシーを設定
 if platform.system() == "Windows":
@@ -60,35 +87,43 @@ if platform.system() == "Windows":
 
 warnings.filterwarnings("ignore")
 
-class LotoEnv(gym.Env):
-    def __init__(self, historical_numbers):
-        super(LotoEnv, self).__init__()
-        self.historical_numbers = historical_numbers
-        self.action_space = spaces.Box(low=0, high=1, shape=(37,), dtype=np.float32)
-        self.observation_space = spaces.Box(low=0, high=1, shape=(37,), dtype=np.float32)
+def set_global_seed(seed=42):
 
-    def reset(self):
-        return np.zeros(37, dtype=np.float32)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-    def step(self, action):
-        action = np.clip(action, 0, 1)
-        selected_numbers = np.argsort(action)[-7:] + 1
-        winning_numbers = set(np.random.choice(self.historical_numbers, 7, replace=False))
-        main_match = len(set(selected_numbers) & winning_numbers)
+    # For deterministic behavior
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-        # === 🎯 強化学習報酬補正 ===
-        reward = main_match / 7
-        if main_match == 7:
-            reward += 5
-        elif main_match == 6:
-            reward += 3
-        elif main_match == 5:
-            reward += 1
+def git_commit_and_push(file_path, message):
+    try:
+        subprocess.run(["git", "add", file_path], check=True)
+        diff = subprocess.run(["git", "diff", "--cached", "--quiet"])
+        if diff.returncode != 0:
+            subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
+            subprocess.run(["git", "config", "--global", "user.email", "github-actions@github.com"], check=True)
+            subprocess.run(["git", "commit", "-m", message], check=True)
+            subprocess.run(["git", "push"], check=True)
+        else:
+            print(f"[INFO] No changes in {file_path}")
+    except Exception as e:
+        print(f"[WARNING] Git commit/push failed: {e}")
 
-        done = True
-        obs = np.zeros(37, dtype=np.float32)
-        return obs, reward, done, {}
+def get_valid_num_heads(embed_dim, max_heads=8):
+    for h in reversed(range(1, max_heads + 1)):
+        if embed_dim % h == 0:
+            return h
+    return 1
 
+def add_noise_to_features(X, noise_level=0.02):
+    import numpy as np
+    noise = np.random.normal(loc=0.0, scale=noise_level, size=X.shape)
+    return X + noise
+    
 class LotoGAN(nn.Module):
     def __init__(self, noise_dim=100):
         super(LotoGAN, self).__init__()
@@ -117,8 +152,6 @@ class LotoGAN(nn.Module):
         return samples.numpy()
 
 def create_advanced_features(dataframe):
-    import numpy as np
-    from itertools import combinations
 
     def convert_to_number_list(x):
         if isinstance(x, str):
@@ -431,6 +464,73 @@ def convert_hit_combos_to_training_data(hit_combos, original_data):
     temp_df = pd.DataFrame(new_rows)
     return preprocess_data(temp_df)[:2]
 
+# === 🔧 Set Transformer モデル ===
+class SAB(nn.Module):
+    def __init__(self, dim_in, dim_out, num_heads):
+        super().__init__()
+        self.mha = nn.MultiheadAttention(embed_dim=dim_in, num_heads=num_heads, batch_first=True)
+        self.ln1 = nn.LayerNorm(dim_in)
+        self.ff = nn.Sequential(
+            nn.Linear(dim_in, dim_out),
+            nn.ReLU(),
+            nn.Linear(dim_out, dim_out)
+        )
+        self.ln2 = nn.LayerNorm(dim_out)
+
+    def forward(self, x):
+        h, _ = self.mha(x, x, x)
+        x = self.ln1(x + h)
+        h = self.ff(x)
+        return self.ln2(x + h)
+
+class SetTransformerRegressor(nn.Module):
+    def __init__(self, input_dim, output_dim, num_sabs=2):
+        super().__init__()
+        num_heads = get_valid_num_heads(input_dim)  # ← 動的に決定！
+        self.encoders = nn.ModuleList([
+            SAB(input_dim, input_dim, num_heads) for _ in range(num_sabs)
+        ])
+        self.fc = nn.Linear(input_dim, output_dim)
+
+    def forward(self, x):
+        for sab in self.encoders:
+            x = sab(x)
+        x = x.mean(dim=1)
+        return self.fc(x)
+
+def train_set_transformer_model(X, y, input_dim, output_dim=7, epochs=30):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = SetTransformerRegressor(input_dim, output_dim).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    criterion = nn.MSELoss()
+
+    dataset = TensorDataset(torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.float32))
+    loader = DataLoader(dataset, batch_size=32, shuffle=True)
+
+    model.train()
+    for epoch in range(epochs):
+        total_loss = 0
+        for batch_X, batch_y in loader:
+            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+            batch_X = batch_X.unsqueeze(1)  # [batch, set_size=1, input_dim]
+            optimizer.zero_grad()
+            out = model(batch_X)
+            loss = criterion(out, batch_y)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        print(f"[SetTransformer] Epoch {epoch+1}, Loss: {total_loss/len(loader):.4f}")
+
+    return model
+
+def predict_with_set_transformer(model, X):
+    model.eval()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    with torch.no_grad():
+        inputs = torch.tensor(X, dtype=torch.float32).to(device).unsqueeze(1)
+        outputs = model(inputs).cpu().numpy()
+    return outputs
+
 class LotoPredictor:
     def __init__(self, input_size, hidden_size, output_size):
         print("[INFO] モデルを初期化")
@@ -441,6 +541,10 @@ class LotoPredictor:
         self.gan_model = None
         self.ppo_model = None
         self.feature_names = None  # AutoGluon用に使用する特徴量名
+        self.set_transformer_model = None
+        self.diffusion_model = None
+        self.diffusion_betas = None
+        self.diffusion_alphas_cumprod = None
 
         # --- GANモデルロード（存在すれば） ---
         if os.path.exists("gan_model.pth"):
@@ -470,22 +574,23 @@ class LotoPredictor:
         output = self.onnx_session.run(None, {input_name: X.astype(np.float32)})
         return output[0]
 
-    def train_model(self, data, accuracy_results=None):
+    def train_model(self, data, accuracy_results=None, model_dir="models/tmp"):
+        os.makedirs(model_dir, exist_ok=True)
+        set_global_seed(42)
         print("[INFO] データ前処理を開始")
 
-        # --- 自己予測データ読み込み（高一致だけ使用、6本以上に限定） ---
+        data["抽せん日"] = pd.to_datetime(data["抽せん日"], errors='coerce')
+        latest_valid_date = data["抽せん日"].max()
+        data = data[data["抽せん日"] <= latest_valid_date]
+        print(f"[INFO] 未来データ除外済: {latest_valid_date.date()} 以前 {len(data)}件")
+
         true_numbers = data['本数字'].tolist()
         self_data = load_self_predictions(file_path="self_predictions.csv", min_match_threshold=6, true_data=true_numbers)
-        
-        # --- 過去本物データから「6本一致以上パターン」を抽出 ---
         high_match_combos = extract_high_match_patterns(data, min_match=6)
 
         if self_data or high_match_combos:
             print("[INFO] 過去の高一致自己予測＋高一致本物データを追加します")
-
             new_rows = []
-            
-            # 自己予測データを追加
             for nums in (self_data or []):
                 new_rows.append({
                     '抽せん日': pd.Timestamp.now(),
@@ -493,8 +598,6 @@ class LotoPredictor:
                     '本数字': nums,
                     'ボーナス数字': [0, 0]
                 })
-
-            # 過去本物データから高一致パターンも追加
             for nums in (high_match_combos or []):
                 new_rows.append({
                     '抽せん日': pd.Timestamp.now(),
@@ -502,161 +605,204 @@ class LotoPredictor:
                     '本数字': nums,
                     'ボーナス数字': [0, 0]
                 })
-
             if new_rows:
                 new_data = pd.DataFrame(new_rows)
                 data = pd.concat([data, new_data], ignore_index=True)
 
-            X, y, self.scaler = preprocess_data(data)
-            if X is None or y is None:
-                print("[ERROR] 前処理後のデータが空です")
-                return
-            self.feature_names = [str(i) for i in range(X.shape[1])]
-
-            # === SAFRL処理ここから ===
-            processed_df = create_advanced_features(data)
-            important_features = []
-            if accuracy_results is not None:
-                important_features = extract_strong_features(accuracy_results, processed_df)
-                print(f"[INFO] 強調対象の特徴量: {important_features}")
-
-            X = reinforce_features(X, self.feature_names, important_features, multiplier=1.5)
-
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
+        X, y, self.scaler = preprocess_data(data)
         if X is None or y is None:
             print("[ERROR] 前処理後のデータが空です")
             return
-        print(f"[DEBUG] X shape: {X.shape}, y shape: {y.shape}")
 
-        try:
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-            print("[INFO] データを学習用とテスト用に分割")
+        self.feature_names = [str(i) for i in range(X.shape[1])]
+        processed_df = create_advanced_features(data)
+        important_features = extract_strong_features(accuracy_results, processed_df) if accuracy_results else []
+        print(f"[INFO] 強調対象の特徴量: {important_features}")
+        X = reinforce_features(X, self.feature_names, important_features, multiplier=1.5)
 
-            # --- LSTM学習 ---
-            input_size = X_train.shape[1]
-            print("[INFO] LSTM モデルの訓練開始")
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        input_size = X_train.shape[1]
+        print("[INFO] LSTM モデルの訓練開始")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        X_train_tensor = torch.tensor(X_train.reshape(-1, 1, input_size), dtype=torch.float32).to(device)
+        y_train_tensor = torch.tensor(y_train, dtype=torch.float32).to(device)
+        self.lstm_model = train_lstm_model(X_train_tensor, y_train_tensor, input_size, device=device)
 
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        dummy_input = torch.randn(1, 1, input_size)
+        lstm_path = os.path.join(model_dir, "lstm_model.onnx")
+        torch.onnx.export(self.lstm_model, dummy_input, lstm_path,
+                        input_names=["input"], output_names=["output"],
+                        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+                        opset_version=12)
+        self.load_onnx_model(lstm_path)
 
-            X_train_tensor = torch.tensor(X_train.reshape(-1, 1, input_size), dtype=torch.float32).to(device)
-            y_train_tensor = torch.tensor(y_train, dtype=torch.float32).to(device)
+        print("[INFO] Set Transformer モデルの学習を開始")
+        self.set_transformer_model = train_set_transformer_model(X_train, y_train, input_size)
 
-            self.lstm_model = train_lstm_model(X_train_tensor, y_train_tensor, input_size, device=device)
+        print("[INFO] Diffusionモデルを訓練中")
+        from diffusion_module import train_diffusion_ddpm
+        real_data_bin = convert_numbers_to_binary_vectors(data)
+        self.diffusion_model, self.diffusion_betas, self.diffusion_alphas_cumprod = train_diffusion_ddpm(real_data_bin)
+        torch.save(self.diffusion_model.state_dict(), os.path.join(model_dir, "diffusion_model.pth"))
 
-            dummy_input = torch.randn(1, 1, input_size)
-            torch.onnx.export(self.lstm_model, dummy_input, "lstm_model.onnx",
-                            input_names=["input"], output_names=["output"],
-                            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-                            opset_version=12)
-            self.load_onnx_model("lstm_model.onnx")
+        print("[INFO] GNNモデルを訓練中")
+        from gnn_core import LotoGNN, build_cooccurrence_graph
+        graph_data = build_cooccurrence_graph(data)
+        self.gnn_model = LotoGNN()
+        optimizer = torch.optim.Adam(self.gnn_model.parameters(), lr=0.01)
+        for epoch in range(200):
+            self.gnn_model.train()
+            out = self.gnn_model(graph_data.x, graph_data.edge_index)
+            loss = torch.nn.functional.mse_loss(out, graph_data.x)
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            if epoch % 50 == 0:
+                print(f"[GNN] Epoch {epoch} Loss: {loss.item():.4f}")
+        torch.save(self.gnn_model.state_dict(), os.path.join(model_dir, "gnn_model.pth"))
 
-            # --- AutoML学習 ---
-            base_models = [
-                ('xgb', XGBRegressor(n_estimators=300, learning_rate=0.05, max_depth=5)),
-                ('lgbm', LGBMRegressor(n_estimators=300, learning_rate=0.05, max_depth=5)),
-                ('rf', RandomForestRegressor(n_estimators=200, max_depth=5))
-            ]
+        print("[INFO] TabNet モデルを訓練中")
+        from tabnet_module import train_tabnet, save_tabnet_model
+        self.tabnet_model = train_tabnet(X_train, y_train)
+        save_tabnet_model(self.tabnet_model, os.path.join(model_dir, "tabnet_model"))
 
-            print("[INFO] AutoML を使った機械学習モデルの学習開始")
-            for i in range(7):
-                df_train = pd.DataFrame(X_train)
-                df_train['target'] = y_train[:, i]
+        print("[INFO] BNN モデルを訓練中")
+        from bnn_module import train_bayesian_regression, save_bayesian_model
+        self.bnn_model, self.bnn_guide = train_bayesian_regression(X_train, y_train, input_size)
+        save_bayesian_model(self.bnn_model, self.bnn_guide, os.path.join(model_dir, "bnn_model"))
 
-                predictor = TabularPredictor(label='target', path=f'autogluon_model_pos{i}').fit(
-                    df_train,
-                    excluded_model_types=['KNN', 'NN_TORCH'],
-                    hyperparameters={
-                        'GBM': {'device': 'gpu', 'num_boost_round': 300},
-                        'XGB': {'tree_method': 'gpu_hist', 'n_estimators': 300},
-                        'CAT': {'task_type': 'GPU', 'iterations': 300},
-                        'RF': {'n_estimators': 200}
-                    },
-                    num_gpus=1
-                )
-                self.regression_models[i] = predictor
-                print(f"[DEBUG] AutoGluon モデル {i+1}/7 の学習完了")
+        print("[INFO] AutoGluon モデルを訓練中")
+        for i in range(7):
+            df_train = pd.DataFrame(X_train)
+            df_train['target'] = y_train[:, i]
+            ag_path = os.path.join(model_dir, f"autogluon_model_pos{i}")
+            predictor = TabularPredictor(label='target', path=ag_path, verbosity=0).fit(
+                df_train,
+                excluded_model_types=['KNN', 'NN_TORCH'],
+                hyperparameters={
+                    'GBM': {'device': 'gpu', 'num_boost_round': 300},
+                    'XGB': {'tree_method': 'gpu_hist', 'n_estimators': 300},
+                    'CAT': {'task_type': 'GPU', 'iterations': 300},
+                    'RF': {'n_estimators': 200}
+                },
+                num_gpus=1,
+                ag_args_fit={'random_seed': 42}
+            )
+            self.regression_models[i] = predictor
+            print(f"[DEBUG] AutoGluon モデル {i+1}/7 完了")
 
-            print("[INFO] 全モデルの学習が完了")
+        print("[INFO] GAN モデルを訓練中")
+        real_data_tensor = torch.tensor(real_data_bin, dtype=torch.float32)
+        gan = LotoGAN()
+        optimizer_G = optim.Adam(gan.generator.parameters(), lr=0.001)
+        optimizer_D = optim.Adam(gan.discriminator.parameters(), lr=0.001)
+        criterion = nn.BCELoss()
+        for epoch in range(3000):
+            set_global_seed(10000 + epoch)
+            idx = np.random.randint(0, real_data_tensor.size(0), 32)
+            real_batch = real_data_tensor[idx]
+            noise = torch.randn(32, gan.noise_dim)
+            fake_batch = gan.generator(noise)
+            real_labels = torch.ones(32, 1)
+            fake_labels = torch.zeros(32, 1)
 
-            # --- 自己進化型 GAN訓練 ---
-            print("[INFO] 自己進化GANモデルの訓練を開始")
+            optimizer_D.zero_grad()
+            d_loss = (criterion(gan.discriminator(real_batch), real_labels) +
+                    criterion(gan.discriminator(fake_batch), fake_labels)) / 2
+            d_loss.backward()
+            optimizer_D.step()
 
-            # 本物データ＋自己予測データでGAN再学習
-            real_data = convert_numbers_to_binary_vectors(data)
-            real_data = torch.tensor(real_data, dtype=torch.float32)
+            optimizer_G.zero_grad()
+            fake_batch = gan.generator(torch.randn(32, gan.noise_dim))
+            g_loss = criterion(gan.discriminator(fake_batch), real_labels)
+            g_loss.backward()
+            optimizer_G.step()
 
-            gan = LotoGAN()
-            optimizer_G = optim.Adam(gan.generator.parameters(), lr=0.001)
-            optimizer_D = optim.Adam(gan.discriminator.parameters(), lr=0.001)
-            criterion = nn.BCELoss()
+            if (epoch + 1) % 500 == 0:
+                print(f"[GAN] Epoch {epoch+1} D: {d_loss.item():.4f} G: {g_loss.item():.4f}")
+        self.gan_model = gan
+        torch.save(self.gan_model.state_dict(), os.path.join(model_dir, "gan_model.pth"))
 
-            for epoch in range(3000):  # エポック数は適宜調整可能
-                idx = np.random.randint(0, real_data.size(0), 32)
-                real_batch = real_data[idx]
+        print("[INFO] PPO モデルを訓練中")
+        from stable_baselines3 import PPO
+        from stable_baselines3.common.vec_env import DummyVecEnv
+        from reinforcement_env import LotoEnv  # あなたの LotoEnv が定義されているファイル名に合わせてください
 
-                noise = torch.randn(32, gan.noise_dim)
-                fake_batch = gan.generator(noise)
+        historical_numbers = [n for nums in data['本数字'].tolist() for n in nums]
+        env = DummyVecEnv([lambda: LotoEnv(historical_numbers)])
 
-                real_labels = torch.ones(32, 1)
-                fake_labels = torch.zeros(32, 1)
+        self.ppo_model = PPO("MlpPolicy", env, seed=42, verbose=0)
+        self.ppo_model.learn(total_timesteps=50000)
+        self.ppo_model.save(os.path.join(model_dir, "ppo_model.zip"))
 
-                optimizer_D.zero_grad()
-                outputs_real = gan.discriminator(real_batch)
-                outputs_fake = gan.discriminator(fake_batch)
-                d_loss_real = criterion(outputs_real, real_labels)
-                d_loss_fake = criterion(outputs_fake, fake_labels)
-                d_loss = (d_loss_real + d_loss_fake) / 2
-                d_loss.backward()
-                optimizer_D.step()
+        print("[INFO] 全モデルの訓練と保存が完了しました")
 
-                optimizer_G.zero_grad()
-                noise = torch.randn(32, gan.noise_dim)
-                fake_batch = gan.generator(noise)
-                outputs = gan.discriminator(fake_batch)
-                g_loss = criterion(outputs, real_labels)
-                g_loss.backward()
-                optimizer_G.step()
+    def load_saved_models(self, model_dir):
 
-                if (epoch+1) % 500 == 0:
-                    print(f"[GAN] Epoch {epoch+1} D_loss: {d_loss.item():.4f} G_loss: {g_loss.item():.4f}")
+        # LSTM
+        onnx_path = os.path.join(model_dir, "lstm_model.onnx")
+        if os.path.exists(onnx_path):
+            self.load_onnx_model(onnx_path)
+            print("[INFO] LSTM (ONNX) モデルをロードしました")
 
-            self.gan_model = gan
-            print("[INFO] 自己進化GANモデルの訓練完了")
+        # GAN
+        gan_path = os.path.join(model_dir, "gan_model.pth")
+        if os.path.exists(gan_path):
+            from gnn_core import LotoGAN
+            self.gan_model = LotoGAN()
+            self.gan_model.load_state_dict(torch.load(gan_path))
+            self.gan_model.eval()
+            print("[INFO] GANモデルをロードしました")
 
-            # --- 自己進化型 PPO訓練 ---
-            print("[INFO] 自己進化PPO強化学習を開始")
+        # PPO
+        ppo_path = os.path.join(model_dir, "ppo_model.zip")
+        if os.path.exists(ppo_path):
+            self.ppo_model = PPO.load(ppo_path)
+            print("[INFO] PPOモデルをロードしました")
 
-            # 本物データ（本数字一覧）をflattenして渡す
-            historical_numbers = [n for nums in data['本数字'].tolist() for n in nums]
-            env = LotoEnv(historical_numbers)
+        # Diffusion
+        diff_path = os.path.join(model_dir, "diffusion_model.pth")
+        if os.path.exists(diff_path):
+            from diffusion_module import DiffusionModel, get_diffusion_constants
+            self.diffusion_model = DiffusionModel()
+            self.diffusion_model.load_state_dict(torch.load(diff_path))
+            self.diffusion_model.eval()
+            self.diffusion_betas, self.diffusion_alphas_cumprod = get_diffusion_constants()
+            print("[INFO] Diffusion モデルをロードしました")
 
-            self.ppo_model = PPO("MlpPolicy", env, verbose=0)
-            self.ppo_model.learn(total_timesteps=50000)
-            print("[INFO] 自己進化PPOモデルの訓練完了")
+        # GNN
+        gnn_path = os.path.join(model_dir, "gnn_model.pth")
+        if os.path.exists(gnn_path):
+            from gnn_core import LotoGNN
+            self.gnn_model = LotoGNN()
+            self.gnn_model.load_state_dict(torch.load(gnn_path))
+            self.gnn_model.eval()
+            print("[INFO] GNN モデルをロードしました")
 
-            # --- 🔥 保存処理ここから！ ---
-            if hasattr(self, "gan_model") and self.gan_model is not None:
-                torch.save(self.gan_model.state_dict(), "gan_model.pth")
-                print("[INFO] GANモデルを保存しました: gan_model.pth")
+        # TabNet
+        tabnet_path = os.path.join(model_dir, "tabnet_model")
+        if os.path.exists(tabnet_path):
+            from tabnet_module import load_tabnet_model
+            self.tabnet_model = load_tabnet_model(tabnet_path)
+            print("[INFO] TabNet モデルをロードしました")
 
-            if hasattr(self, "ppo_model") and self.ppo_model is not None:
-                self.ppo_model.save("ppo_model")
-                print("[INFO] PPOモデルを保存しました: ppo_model.zip")
+        # BNN
+        bnn_path = os.path.join(model_dir, "bnn_model")
+        if os.path.exists(bnn_path):
+            from bnn_module import load_bayesian_model
+            self.bnn_model, self.bnn_guide = load_bayesian_model(bnn_path)
+            print("[INFO] BNN モデルをロードしました")
 
-            # --- 🔥 進化履歴ログ保存 ---
-            with open("evolution_log.txt", "a", encoding="utf-8") as f:
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                f.write(f"{now} : モデル学習完了 / 自己予測データ件数 {len(self_data) if self_data else 0}\n")
-
-            # --- 🔥進化履歴グラフ生成---
-            generate_evolution_graph()
-
-        except Exception as e:
-            print(f"[ERROR] モデル学習中にエラー発生: {e}")
+        # AutoGluon
+        for j in range(7):
+            ag_path = os.path.join(model_dir, f"autogluon_model_pos{j}")
+            if os.path.exists(ag_path):
+                from autogluon.tabular import TabularPredictor
+                self.regression_models[j] = TabularPredictor.load(ag_path)
+                print(f"[INFO] AutoGluon モデル {j} をロードしました")
 
     def predict(self, latest_data, num_candidates=50):
-        print("[INFO] 予測を開始（候補数:", num_candidates, "）")
+        print(f"[INFO] 予測を開始（候補数: {num_candidates}）")
         X, _, _ = preprocess_data(latest_data)
 
         if X is None or len(X) == 0:
@@ -665,37 +811,37 @@ class LotoPredictor:
 
         print(f"[DEBUG] 予測用データの shape: {X.shape}")
 
-        # --- 🔥 頻度スコア・周期スコアを先に計算しておく ---
         freq_score = calculate_number_frequencies(latest_data)
         cycle_score = calculate_number_cycle_score(latest_data)
-
         all_predictions = []
 
+        def append_prediction(numbers, base_confidence=0.8):
+            numbers = [int(n) for n in numbers]  # ← 安全キャスト
+            score = sum(freq_score.get(n, 0) for n in numbers) - sum(cycle_score.get(n, 0) for n in numbers)
+            confidence = base_confidence + (score / 500.0)
+            all_predictions.append((numbers, confidence))
+
         try:
-            feature_count = X.shape[1]
             X_df = pd.DataFrame(X)
 
-            # AutoML と LSTM 用に feature_names をもとに補完
             if self.feature_names:
                 for name in self.feature_names:
                     if name not in X_df.columns:
-                        X_df[name] = 0.0  # 欠損列を補完
-
-                X_df = X_df[self.feature_names]  # 列の順序も揃える
-                X = X_df.values  # LSTM 用に再代入（NumPy配列）
+                        X_df[name] = 0.0
+                X_df = X_df[self.feature_names]
+                X = X_df.values
             else:
                 print("[WARNING] self.feature_names が未定義です")
 
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-            # --- ML＋LSTMアンサンブル予測 ---
-            for _ in range(num_candidates):
-                # AutoML予測
+            for i in range(num_candidates):
+                set_global_seed(100 + i)
+
                 ml_predictions = np.array([
-                    self.regression_models[i].predict(X_df) for i in range(7)
+                    self.regression_models[j].predict(X_df) for j in range(7)
                 ]).T
 
-                # LSTM予測
                 self.lstm_model.to(device)
                 self.lstm_model.eval()
                 X_tensor = torch.tensor(X.reshape(-1, 1, X.shape[1]), dtype=torch.float32).to(device)
@@ -704,55 +850,122 @@ class LotoPredictor:
 
                 final_predictions = (ml_predictions + lstm_predictions) / 2
 
+                if self.set_transformer_model:
+                    st_predictions = predict_with_set_transformer(self.set_transformer_model, X)
+                    final_predictions = (final_predictions + st_predictions) / 2
+
+                if hasattr(self, "tabnet_model") and self.tabnet_model is not None:
+                    from tabnet_module import predict_tabnet
+                    tabnet_preds = predict_tabnet(self.tabnet_model, X)
+                    final_predictions = (final_predictions + tabnet_preds) / 2
+
                 for pred in final_predictions:
                     numbers = np.round(pred).astype(int)
                     numbers = np.clip(numbers, 1, 37)
                     numbers = np.sort(numbers)
+                    append_prediction(numbers, base_confidence=1.0)
 
-                    # --- 🔥 頻出＋周期スコア補正 ---
-                    score = sum(freq_score.get(n, 0) for n in numbers) - sum(cycle_score.get(n, 0) for n in numbers)
-                    confidence = 1.0 + (score / 500.0)  # 信頼度補正
+            if self.gan_model:
+                for i in range(num_candidates):
+                    set_global_seed(int(time.time() * 1000) % 100000 + i)  # 毎回異なるシード
+                    gan_sample = self.gan_model.generate_samples(1)[0]
+                
+                    # ★ 数字にランダム性を追加（例：温度スケーリング）
+                    logits = gan_sample / 0.7  # "温度" を下げるとシャープに、高くすると多様に
+                    probs = logits / logits.sum()
+                    numbers = np.random.choice(37, 7, replace=False, p=probs)
+                    
+                    append_prediction(np.sort(numbers + 1), base_confidence=0.8)
 
-                    all_predictions.append((numbers, confidence))
-
-            # --- GAN予測 ---
-            if hasattr(self, "gan_model") and self.gan_model is not None:
-                gan_samples = self.gan_model.generate_samples(num_candidates)
-                for sample in gan_samples:
-                    numbers = np.argsort(sample)[-7:] + 1
-                    numbers = np.sort(numbers)
-
-                    score = sum(freq_score.get(n, 0) for n in numbers) - sum(cycle_score.get(n, 0) for n in numbers)
-                    confidence = 0.8 + (score / 500.0)
-
-                    all_predictions.append((numbers, confidence))
-
-            # --- PPO予測 ---
-            if hasattr(self, "ppo_model") and self.ppo_model is not None:
-                for _ in range(num_candidates):
+            if self.ppo_model:
+                for i in range(num_candidates):
+                    set_global_seed(random.randint(1000, 999999))  # 🔁 シードを毎回変更
                     obs = np.zeros(37, dtype=np.float32)
-                    action, _ = self.ppo_model.predict(obs, deterministic=True)
+                
+                    # 多様性確保のため deterministic=False に変更
+                    action, _ = self.ppo_model.predict(obs, deterministic=False)
+                
                     numbers = np.argsort(action)[-7:] + 1
-                    numbers = np.sort(numbers)
+                    append_prediction(np.sort(numbers), base_confidence=0.85)
 
-                    score = sum(freq_score.get(n, 0) for n in numbers) - sum(cycle_score.get(n, 0) for n in numbers)
-                    confidence = 0.85 + (score / 500.0)
+            if self.diffusion_model:
+                from diffusion_module import sample_diffusion_ddpm
+                print("[INFO] Diffusion モデルによる生成を開始")
+            
+                for i in range(num_candidates):
+                    set_global_seed(random.randint(1000, 999999))  # 🔁 乱数シードを毎回変える
+            
+                    try:
+                        sample = sample_diffusion_ddpm(
+                            self.diffusion_model,
+                            self.diffusion_betas,
+                            self.diffusion_alphas_cumprod,
+                            dim=37,
+                            num_samples=1  # ★ 1件ずつ生成して多様性を確保
+                        )[0]
+            
+                        numbers = np.argsort(sample)[-7:] + 1
+                        numbers = np.sort(numbers)
+                        append_prediction(numbers, base_confidence=0.84)
+            
+                    except Exception as e:
+                        print(f"[WARNING] Diffusion 生成中にエラー: {e}")
 
-                    all_predictions.append((numbers, confidence))
+            if self.gnn_model:
+                from gnn_core import build_cooccurrence_graph
+                print("[INFO] GNN推論を開始")
+                graph_data = build_cooccurrence_graph(latest_data)
+                self.gnn_model.eval()
+                with torch.no_grad():
+                    gnn_scores = self.gnn_model(graph_data.x, graph_data.edge_index).squeeze().numpy()
+                    for i in range(num_candidates):
+                        set_global_seed(400 + i)
+                        numbers = np.argsort(gnn_scores)[-7:] + 1
+                        append_prediction(sorted([int(n) for sub in numbers for n in (sub if isinstance(sub, (list, np.ndarray)) else [sub])]), base_confidence=0.83)
 
-            print(f"[INFO] 総予測候補数（ML＋GAN＋PPO）: {len(all_predictions)}件")
+            if self.bnn_model:
+                from bnn_module import predict_bayesian_regression
+                print("[INFO] BNNモデルによる予測を実行中")
+            
+                for i in range(num_candidates):
+                    set_global_seed(random.randint(1000, 999999))  # 🔁 毎回異なるシードで予測
+            
+                    try:
+                        bnn_preds = predict_bayesian_regression(
+                            self.bnn_model,
+                            self.bnn_guide,
+                            X,
+                            samples=1  # 🔁 1サンプルずつ個別生成
+                        )
+            
+                        for pred in bnn_preds:
+                            pred = np.array(pred).flatten()
+                            numbers = np.round(pred).astype(int)
+                            numbers = np.clip(numbers, 1, 37)
+                            numbers = np.unique(numbers)
+            
+                            # 必要なら不足分をランダム補完（BNNは被りが出やすいため）
+                            while len(numbers) < 7:
+                                add = random.randint(1, 37)
+                                if add not in numbers:
+                                    numbers = np.append(numbers, add)
+            
+                            numbers = np.sort(numbers[:7])  # 念のため7個制限
+                            append_prediction(numbers, base_confidence=0.83)
+            
+                    except Exception as e:
+                        print(f"[WARNING] BNN予測中にエラー発生: {e}")
 
-            # 🔥 最後に「番号リスト」と「信頼度リスト」を分離して返す
+            print(f"[INFO] 総予測候補数（全モデル統合）: {len(all_predictions)}件")
             numbers_only = [pred[0] for pred in all_predictions]
             confidence_scores = [pred[1] for pred in all_predictions]
-
             return numbers_only, confidence_scores
 
         except Exception as e:
             print(f"[ERROR] 予測中にエラー発生: {e}")
+            traceback.print_exc()
             return None, None
-                
-# 予測結果の評価
+        
 def evaluate_predictions(predictions, actual_numbers):
     matches = []
     for pred in predictions:
@@ -996,6 +1209,7 @@ def is_running_with_streamlit():
         return False
 
 def main_with_improved_predictions():
+    set_global_seed(42)  # ★追加
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -1005,6 +1219,7 @@ def main_with_improved_predictions():
 
     try:
         data = pd.read_csv("loto7.csv")
+        data["抽せん日"] = pd.to_datetime(data["抽せん日"], errors='coerce')
         print("データ読み込み完了")
     except Exception as e:
         print(f"データ読み込みエラー: {e}")
@@ -1034,13 +1249,16 @@ def main_with_improved_predictions():
         if st.button("予測を実行"):
             try:
                 latest_data = data.tail(10)
+                target_date = latest_data["抽せん日"].max()
+                history_data = data[data["抽せん日"] < target_date]  # 🔥 未来リーク防止
+
                 predictions, confidence_scores = predictor.predict(latest_data)
 
                 if predictions is None:
                     print("[ERROR] 予測に失敗したため処理を中断します。")
-                    return  # ⬅️ ここで強制終了させると安全
+                    return
 
-                verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), data)
+                verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), history_data)
 
                 save_self_predictions(verified_predictions)
 
@@ -1055,13 +1273,16 @@ def main_with_improved_predictions():
         print("[INFO] Streamlit以外の実行環境検出。通常のコンソール出力で予測を実行します。")
         try:
             latest_data = data.tail(10)
+            target_date = latest_data["抽せん日"].max()
+            history_data = data[data["抽せん日"] < target_date]  # 🔥 未来リーク防止
+
             predictions, confidence_scores = predictor.predict(latest_data)
 
             if predictions is None:
                 print("[ERROR] 予測に失敗したため処理を中断します。")
-                return  # ⬅️ ここで強制終了させると安全
+                return
 
-            verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), data)
+            verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), history_data)
 
             save_self_predictions(verified_predictions)
 
@@ -1178,95 +1399,105 @@ def generate_evolution_graph(log_file="evolution_log.txt", output_file="evolutio
 def verify_predictions(predictions, historical_data, top_k=5):
     def check_number_constraints(numbers):
         """予測数字配列の制約チェック"""
-        if len(numbers) != 7:
-            return False
-        if len(np.unique(numbers)) != 7:
-            return False
-        if not np.all((numbers >= 1) & (numbers <= 37)):
-            return False
-        return True
+        return (
+            isinstance(numbers, (list, np.ndarray)) and
+            len(numbers) == 7 and
+            len(np.unique(numbers)) == 7 and
+            np.all((np.array(numbers) >= 1) & (np.array(numbers) <= 37))
+        )
+
+    def get_high_match_templates(historical_df, match_threshold=6):
+        """過去の6本一致テンプレートを抽出"""
+        unique_sets = set()
+        rows = historical_df['本数字'].apply(lambda x: set(map(int, x)) if isinstance(x, list) else set())
+        for i in range(len(rows)):
+            for j in range(i + 1, len(rows)):
+                intersect = rows[i] & rows[j]
+                if len(intersect) >= match_threshold:
+                    unique_sets.add(tuple(sorted(intersect)))
+        return [set(t) for t in unique_sets]
+
+    def penalize_overused_numbers(preds, threshold=0.05):
+        """頻出数字を含む予測の信頼度を下げる"""
+        all_nums = [n for pred in preds for n in pred[0]]
+        freq = pd.Series(all_nums).value_counts(normalize=True)
+        penalized = []
+        for nums, conf in preds:
+            penalty = sum(freq.get(n, 0) > threshold for n in nums) * 0.1
+            penalized.append((nums, conf * (1 - penalty)))
+        return penalized
 
     print("[INFO] 予測候補をフィルタリング中...")
 
-    # --- 正しい予測だけ残す ---
-    valid_predictions = []
-    for pred, conf in predictions:
-        numbers = np.sort(pred)
-        if check_number_constraints(numbers):
-            valid_predictions.append((numbers, conf))
-
+    # --- 有効予測のみ抽出 ---
+    valid_predictions = [
+        (np.sort(pred), conf)
+        for pred, conf in predictions
+        if check_number_constraints(pred)
+    ]
     if not valid_predictions:
         print("[WARNING] 有効な予測がありません")
         return []
 
-    # --- 信頼度順に上位100個に絞る ---
+    # --- 頻出数字ペナルティ ---
+    valid_predictions = penalize_overused_numbers(valid_predictions)
+
+    # --- 信頼度順に100件まで絞る ---
     valid_predictions.sort(key=lambda x: x[1], reverse=True)
     candidates = valid_predictions[:100]
 
-    # --- 🔥 カバレッジ最大化アルゴリズムで選抜 ---
-    selected = []
-    used_numbers = set()
-    used_flags = [False] * len(candidates)
-
-    while len(selected) < (top_k - 2):  # ← ★あとで強制枠を確保するため-2
-        best_score = -1
-        best_idx = -1
-
-        for idx, (numbers_set, conf) in enumerate(candidates):
+    # --- カバレッジ最大化で top_k - 2 選抜 ---
+    selected, used_numbers, used_flags = [], set(), [False] * len(candidates)
+    while len(selected) < (top_k - 2):
+        best_score, best_idx = -1, -1
+        for idx, (nums, conf) in enumerate(candidates):
             if used_flags[idx]:
                 continue
-            combined = used_numbers.union(numbers_set)
+            combined = used_numbers | set(nums)
             coverage_score = len(combined)
-
-            total_score = (coverage_score * 0.7) + (conf * 0.3)
-
-            if total_score > best_score:
-                best_score = total_score
-                best_idx = idx
-
+            score = (coverage_score * 0.8) + (conf * 0.2)  # ⬅ カバレッジ重視に調整
+            if score > best_score:
+                best_score, best_idx = score, idx
         if best_idx == -1:
             break
-
         selected.append(candidates[best_idx])
         used_numbers.update(candidates[best_idx][0])
         used_flags[best_idx] = True
 
-    # --- 🔥 強制6本構成を追加 ---
+    # --- 強制6本構成テンプレート追加（最大2件） ---
     try:
-        historical = historical_data.copy()
-        historical['本数字'] = historical['本数字'].apply(lambda x: list(map(int, x)) if isinstance(x, list) else [])
+        print("[INFO] 強制テンプレート構成の探索中...")
+        historical_data['本数字'] = historical_data['本数字'].apply(
+            lambda x: list(map(int, x)) if isinstance(x, list) else []
+        )
+        templates = get_high_match_templates(historical_data)
 
-        high_match_rows = []
-        for idx1, row1 in historical.iterrows():
-            nums1 = set(row1['本数字'])
-            for idx2, row2 in historical.iterrows():
-                if idx1 >= idx2:
-                    continue
-                nums2 = set(row2['本数字'])
-                if len(nums1 & nums2) >= 6:
-                    high_match_rows.append(list(nums1))
+        added = 0
+        tried = set()
+        while added < 2 and len(tried) < len(templates):
+            base = set(random.choice(templates))
+            if tuple(sorted(base)) in tried:
+                continue
+            tried.add(tuple(sorted(base)))
 
-        if high_match_rows:
-            for _ in range(2):  # ← 2個強制追加
-                template = random.choice(high_match_rows)
-                template = set(template)
-                available_numbers = list(set(range(1, 38)) - template)
-                if available_numbers:
-                    removed = random.choice(list(template))
-                    added = random.choice(available_numbers)
-                    template.remove(removed)
-                    template.add(added)
-                final_combo = sorted(template)
-                selected.append((np.array(final_combo), 1.0))
-            print("[INFO] 強制6本構成を追加しました")
+            available = list(set(range(1, 38)) - base)
+            if len(base) >= 6 and available:
+                base = set(random.sample(base, 6))  # 6個だけ残す
+                base.add(random.choice(available))  # 1個追加して7個に
+                combo = np.sort(list(base))
+                selected.append((combo, 1.0))
+                added += 1
+
+        if added > 0:
+            print(f"[INFO] 強制6本構成を {added} 件追加しました")
         else:
-            print("[WARNING] 過去に6本一致パターンが見つかりませんでした")
-
+            print("[INFO] 強制テンプレート構成は見つかりませんでした")
     except Exception as e:
-        print(f"[WARNING] 強制構成作成エラー: {e}")
+        print(f"[WARNING] 強制構成作成中にエラー発生: {e}")
 
-    print("[INFO] 最終選択された予測数:", len(selected))
+    print(f"[INFO] 最終選択された予測数: {len(selected)}")
     return selected
+
 
 def extract_strong_features(evaluation_df, feature_df):
     """
@@ -1344,52 +1575,164 @@ def calculate_number_frequencies(dataframe):
     return freq
 
 def calculate_number_cycle_score(dataframe):
-    """番号ごとの出現周期スコアを計算"""
-    number_last_seen = {n: None for n in range(1, 38)}
-    number_cycle = {n: [] for n in range(1, 38)}
-    
-    for i, nums in enumerate(dataframe['本数字']):
-        for n in range(1, 38):
-            if n in nums:
-                if number_last_seen[n] is not None:
-                    cycle = i - number_last_seen[n]
-                    number_cycle[n].append(cycle)
-                number_last_seen[n] = i
+    """
+    数字ごとの未出現期間（周期）に基づいたスコアを計算する。
+    直近で出ていないほど高いスコアを付ける。
+    """
+    last_seen = {}
+    today_index = len(dataframe)
 
-    avg_cycle = {n: np.mean(cycles) if cycles else 999 for n, cycles in number_cycle.items()}
-    return avg_cycle
+    for idx, row in dataframe[::-1].iterrows():
+        for number in row['本数字']:
+            if number not in last_seen:
+                last_seen[number] = today_index - idx  # 今何回分前に出たか
 
+    # 最大未出周期 = 高スコアとするため反転（例: 未出日数が長いほど高得点）
+    max_cycle = max(last_seen.values()) if last_seen else 1
+    score = {n: last_seen.get(n, max_cycle) for n in range(1, 38)}
+    return score
+
+        
 def bulk_predict_all_past_draws():
-    df = pd.read_csv("loto7_1.csv")
-    df["抽せん日"] = pd.to_datetime(df["抽せん日"])
+    set_global_seed(42)
+    df = pd.read_csv("loto7.csv")
+    df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors='coerce')
     df = df.sort_values("抽せん日").reset_index(drop=True)
+    print("[INFO] 抽せんデータ読み込み完了:", len(df), "件")
 
-    accuracy_results = evaluate_prediction_accuracy_with_bonus("loto7_predictions.csv", "loto7.csv")
-    X, _, _ = preprocess_data(df)
-    input_size = X.shape[1]
-    predictor = LotoPredictor(input_size, 128, 7)
-    predictor.train_model(df, accuracy_results=accuracy_results)
+    pred_file = "loto7_predictions.csv"
 
-    for i in range(1, len(df)):
-        train_data = df.iloc[:i]
-        test_date = pd.to_datetime(df.iloc[i]["抽せん日"]).strftime("%Y-%m-%d")
-        latest_data = df.iloc[i-10:i] if i >= 10 else df.iloc[:i]
+    skip_dates = set()
+    if os.path.exists(pred_file):
+        try:
+            pred_df = pd.read_csv(pred_file, encoding='utf-8-sig')
+            if "抽せん日" in pred_df.columns:
+                skip_dates = set(pd.to_datetime(pred_df["抽せん日"], errors='coerce').dropna().dt.strftime("%Y-%m-%d"))
+        except Exception as e:
+            print(f"[WARNING] 予測ファイル読み込みエラー: {e}")
+    else:
+        with open(pred_file, "w", encoding="utf-8-sig") as f:
+            f.write("抽せん日,予測1,信頼度1,予測2,信頼度2,予測3,信頼度3,予測4,信頼度4,予測5,信頼度5\n")
 
-        print(f"\n=== {test_date} の予測を開始 ===")
+    predictor_cache = {}
+
+    for i in range(10, len(df)):
+        set_global_seed(1000 + i)
+
+        test_date = df.iloc[i]["抽せん日"]
+        test_date_str = test_date.strftime("%Y-%m-%d")
+
+        if test_date_str in skip_dates:
+            print(f"[INFO] 既に予測済み: {test_date_str} → スキップ")
+            continue
+
+        print(f"\n=== {test_date_str} の予測を開始 ===")
+        train_data = df.iloc[:i].copy()
+        latest_data = df.iloc[i-10:i].copy()
+
+        X, _, _ = preprocess_data(train_data)
+        if X is None:
+            print(f"[WARNING] {test_date_str} の学習データが無効です")
+            continue
+
+        input_size = X.shape[1]
+
+        if i % 50 == 0 or input_size not in predictor_cache:
+            print(f"[INFO] モデル再学習: {test_date_str} 時点")
+            predictor = LotoPredictor(input_size, 128, 7)
+            predictor.train_model(train_data)
+            predictor_cache[input_size] = predictor
+        else:
+            predictor = predictor_cache[input_size]
 
         predictions, confidence_scores = predictor.predict(latest_data)
         if predictions is None:
-            print(f"[ERROR] {test_date} の予測に失敗しました")
+            print(f"[ERROR] {test_date_str} の予測に失敗しました")
             continue
 
         verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), train_data)
         save_self_predictions(verified_predictions)
         save_predictions_to_csv(verified_predictions, test_date)
+        git_commit_and_push("loto7_predictions.csv", "Auto update loto7_predictions.csv [skip ci]")
 
-        # ✅ 各予測直後に精度評価を実行
+        model_dir = f"models/{test_date_str}"
+        os.makedirs(model_dir, exist_ok=True)
+
+        try:
+            def save_if_exists(obj, save_fn, path):
+                if obj:
+                    save_fn(path)
+                    print(f"[INFO] 保存完了: {path}")
+
+            if os.path.exists("lstm_model.onnx"):
+                shutil.copy("lstm_model.onnx", os.path.join(model_dir, "lstm_model.onnx"))
+
+            save_if_exists(predictor.gan_model, lambda p: torch.save(predictor.gan_model.state_dict(), p), os.path.join(model_dir, "gan_model.pth"))
+            save_if_exists(predictor.ppo_model, lambda p: predictor.ppo_model.save(p), os.path.join(model_dir, "ppo_model.zip"))
+            save_if_exists(predictor.diffusion_model, lambda p: torch.save(predictor.diffusion_model.state_dict(), p), os.path.join(model_dir, "diffusion_model.pth"))
+            save_if_exists(predictor.gnn_model, lambda p: torch.save(predictor.gnn_model.state_dict(), p), os.path.join(model_dir, "gnn_model.pth"))
+
+            if getattr(predictor, "tabnet_model", None):
+                from tabnet_module import save_tabnet_model
+                save_tabnet_model(predictor.tabnet_model, os.path.join(model_dir, "tabnet_model"))
+
+            if getattr(predictor, "bnn_model", None):
+                from bnn_module import save_bayesian_model
+                save_bayesian_model(predictor.bnn_model, predictor.bnn_guide, os.path.join(model_dir, "bnn_model"))
+
+            for j in range(7):
+                model_path = f"autogluon_model_pos{j}"
+                dest = os.path.join(model_dir, f"autogluon_model_pos{j}")
+                if os.path.exists(model_path):
+                    shutil.copytree(model_path, dest, dirs_exist_ok=True)
+
+            print(f"[INFO] モデルを保存しました → {model_dir}")
+
+        except Exception as e:
+            print(f"[WARNING] モデル保存中にエラー発生: {e}")
+            traceback.print_exc()
+
         evaluate_prediction_accuracy_with_bonus("loto7_predictions.csv", "loto7.csv")
 
-    print("\n=== 一括予測と評価が完了しました ===")
+    # === 🆕 未来1回分の予測を追加 ===
+    try:
+        future_date = df["抽せん日"].max() + pd.Timedelta(days=7)
+        future_date_str = future_date.strftime("%Y-%m-%d")
+
+        if future_date_str not in skip_dates:
+            print(f"\n=== {future_date_str} の未来予測を開始 ===")
+            latest_data = df.tail(10).copy()
+            train_data = df.copy()
+
+            X, _, _ = preprocess_data(train_data)
+            if X is None:
+                print("[WARNING] 未来予測用の学習データが無効です")
+            else:
+                input_size = X.shape[1]
+                if input_size not in predictor_cache:
+                    predictor = LotoPredictor(input_size, 128, 7)
+                    predictor.train_model(train_data)
+                    predictor_cache[input_size] = predictor
+                else:
+                    predictor = predictor_cache[input_size]
+
+                predictions, confidence_scores = predictor.predict(latest_data)
+                if predictions is not None:
+                    verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), train_data)
+                    save_self_predictions(verified_predictions)
+                    save_predictions_to_csv(verified_predictions, future_date)
+                    git_commit_and_push("loto7_predictions.csv", "Auto predict future draw [skip ci]")
+                    print(f"[INFO] 未来予測（{future_date_str}）完了")
+        else:
+            print(f"[INFO] 未来予測（{future_date_str}）は既に実行済みです")
+
+    except Exception as e:
+        print(f"[WARNING] 未来予測中にエラー発生: {e}")
+        traceback.print_exc()
+
+    print("\n=== 一括予測とモデル保存・評価が完了しました ===")
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.set_start_method('spawn', force=True)
     bulk_predict_all_past_draws()
