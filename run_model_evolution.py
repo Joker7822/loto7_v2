@@ -31,7 +31,7 @@ try:
     df = pd.read_csv("loto7.csv")
     df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors='coerce')
     X, _, _ = preprocess_data(df)
-    input_size = X.shape[1] if X is not None else 10
+    input_size = X.shape[1] if X is not None and not X.empty else 10
 
     predictor = LotoPredictor(input_size=input_size, hidden_size=128, output_size=7)
     predictor.train_model(df, accuracy_results=accuracy_df)
