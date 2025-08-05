@@ -680,9 +680,9 @@ class LotoPredictor:
                 df_train,
                 excluded_model_types=['KNN', 'NN_TORCH'],
                 hyperparameters={
-                    'GBM': {'device': 'gpu', 'num_boost_round': 300},
-                    'XGB': {'tree_method': 'gpu_hist', 'n_estimators': 300},
-                    'CAT': {'task_type': 'GPU', 'iterations': 300},
+                    'GBM': {'device': 'CPU', 'num_boost_round': 300},
+                    'XGB': {'tree_method': 'hist', 'n_estimators': 300},
+                    'CAT': {'task_type': 'CPU', 'iterations': 300},
                     'RF': {'n_estimators': 200}
                 },
                 num_gpus=1,
