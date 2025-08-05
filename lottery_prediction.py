@@ -1736,3 +1736,22 @@ if __name__ == "__main__":
     import multiprocessing
     multiprocessing.set_start_method('spawn', force=True)
     bulk_predict_all_past_draws()
+
+
+def log_prediction_summary(evaluation_df, log_path="prediction_accuracy_log.txt"):
+    if evaluation_df is None or evaluation_df.empty:
+        print("[WARNING] 評価データが空です")
+        return
+
+    with open(log_path, "a", encoding="utf-8") as f:
+        for _, row in evaluation_df.iterrows():
+            date = row["抽せん日"]
+            match = row["本数字一致数"]
+            bonus = row["ボーナス一致数"]
+            rank = row["等級"]
+            confidence = row.get("信頼度", "N/A")
+            pred = row["予測番号"]
+
+            f.write(f"{date}: 一致={match}本, ボーナス={bonus}, 等級={rank}, 信頼度={confidence}, 番号={pred}\n")
+
+    print(f"[INFO] 予測精度履歴を {log_path} に追記しました")
