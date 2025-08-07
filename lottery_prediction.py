@@ -545,7 +545,8 @@ class LotoPredictor:
         self.diffusion_model = None
         self.diffusion_betas = None
         self.diffusion_alphas_cumprod = None
-
+        self.regression_models = [None] * 7
+        
         # --- GANモデルロード（存在すれば） ---
         if os.path.exists("gan_model.pth"):
             self.gan_model = LotoGAN()
