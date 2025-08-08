@@ -2,8 +2,15 @@ name: Auto Scrape loto7
 
 on:
   schedule:
-    - cron: '0 11 * * 5'  # JST 20:00（UTC 11:00）、金曜
+    - cron: '0 11 * * 5'  # JST 20:00（UTC 11:00）
   workflow_dispatch:
+
+permissions:
+  contents: write   # ← これ大事
+
+concurrency:
+  group: auto-loto7-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   run-scraper:
@@ -12,11 +19,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false   # 自前でGITHUB_TOKEN使うのでfalse
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
       - name: Install dependencies and headless Chrome
         run: |
@@ -25,13 +36,12 @@ jobs:
             libglib2.0-0 libnss3 libxi6 libxcomposite1 libxss1 \
             libatk-bridge2.0-0 libgtk-3-0 libasound2t64
 
-          # Install Chrome 138
+          # Chrome 138 / ChromeDriver 138
           wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chrome-linux64.zip
           unzip chrome-linux64.zip
           sudo mv chrome-linux64 /opt/chrome
           sudo ln -sf /opt/chrome/chrome /usr/bin/google-chrome
 
-          # Install ChromeDriver 138
           wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chromedriver-linux64.zip
           unzip chromedriver-linux64.zip
           sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
@@ -49,44 +59,56 @@ jobs:
       - name: Run scraping script
         run: xvfb-run -a python scrapingloto7.py
 
-      - name: Commit and push loto7.csv if changed
+      - name: Prepare git (common)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
-
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+
+      - name: Commit and push loto7.csv if changed
+        run: |
+          set -e
+          BRANCH="${{ github.ref_name }}"
           git fetch origin
-          git stash --include-untracked
-          git checkout ${{ github.ref_name }}
-          git pull --rebase origin ${{ github.ref_name }}
+          git stash --include-untracked || true
+          git checkout "$BRANCH"
+          # rebase（競合時はtheirs優先で自動解決 ※oursにしたいなら下の--theirsを--oursに）
+          git pull --rebase origin "$BRANCH" || true
+          if [ -d .git/rebase-apply ] || [ -d .git/rebase-merge ]; then
+            git checkout --theirs loto7.csv || true
+            git add loto7.csv || true
+            git rebase --continue || true
+          fi
           git stash pop || true
 
           git add loto7.csv
-
           if git diff --cached --quiet; then
             echo "No changes to loto7.csv"
           else
             git commit -m "Auto update loto7.csv [skip ci]"
-            git push origin HEAD:${{ github.ref_name }}
+            git push origin HEAD:"$BRANCH"
           fi
 
       - name: Run predictor script
         run: xvfb-run -a python run_model_evolution.py
 
       - name: Commit and push prediction results if changed
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
-
-          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+          set -e
+          BRANCH="${{ github.ref_name }}"
           git fetch origin
-          git stash --include-untracked
-          git checkout ${{ github.ref_name }}
-          git pull --rebase origin ${{ github.ref_name }}
+          git stash --include-untracked || true
+          git checkout "$BRANCH"
+          git pull --rebase origin "$BRANCH" || true
+          if [ -d .git/rebase-apply ] || [ -d .git/rebase-merge ]; then
+            git checkout --theirs loto7_predictions.csv loto7_prediction_evaluation_with_bonus.csv \
+                                   loto7_evaluation_summary.txt self_predictions.csv || true
+            git add loto7_predictions.csv loto7_prediction_evaluation_with_bonus.csv \
+                    loto7_evaluation_summary.txt self_predictions.csv || true
+            git rebase --continue || true
+          fi
           git stash pop || true
 
           git add loto7_predictions.csv \
@@ -98,5 +120,5 @@ jobs:
             echo "No prediction result changes"
           else
             git commit -m "Auto update prediction results [skip ci]"
-            git push origin HEAD:${{ github.ref_name }}
+            git push origin HEAD:"$BRANCH"
           fi
