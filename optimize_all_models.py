@@ -5,6 +5,8 @@ import optuna
 import json
 import os
 
+from lottery_prediction import git_commit_and_push
+
 from tabnet_module import train_tabnet
 from autogluon.tabular import TabularPredictor
 from diffusion_module import train_diffusion_ddpm
@@ -114,6 +116,8 @@ def main():
     with open(f"{RESULT_DIR}/stacking.json", "w") as f:
         json.dump(stack_params, f, indent=2)
     print(f"Stacking → {stack_params}")
+    # Push all updated Optuna params
+    git_commit_and_push(RESULT_DIR, "Update Optuna hyperparameters")
 
 if __name__ == "__main__":
     main()

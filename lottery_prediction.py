@@ -1688,6 +1688,7 @@ def bulk_predict_all_past_draws():
                     shutil.copytree(model_path, dest, dirs_exist_ok=True)
 
             print(f"[INFO] モデルを保存しました → {model_dir}")
+            git_commit_and_push(model_dir, f"Save trained models for {test_date_str}")
 
         except Exception as e:
             print(f"[WARNING] モデル保存中にエラー発生: {e}")

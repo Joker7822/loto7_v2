@@ -1,5 +1,6 @@
 import os
 from lottery_prediction import (
+    git_commit_and_push,
     bulk_predict_all_past_draws,
     evaluate_prediction_accuracy_with_bonus,
     LotoPredictor,
@@ -37,19 +38,9 @@ try:
     predictor.train_model(df, accuracy_results=accuracy_df)
 
     print("[✅ 完了] モデルの強化学習が完了しました")
-    push_models_to_github("Updated models after evolution")
+    git_commit_and_push("models", "Updated models after evolution")
 
 except Exception as e:
     print(f"[ERROR] モデル再学習中にエラー: {e}")
 
 
-import subprocess
-
-def push_models_to_github(commit_msg="Update trained models"):
-    try:
-        subprocess.run(["git", "add", "models"], check=True)
-        subprocess.run(["git", "commit", "-m", commit_msg], check=True)
-        subprocess.run(["git", "push"], check=True)
-        print("[INFO] GitHub に models フォルダを push しました。")
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR] GitHub push 失敗: {e}")
