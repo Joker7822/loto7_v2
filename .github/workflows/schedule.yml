@@ -12,22 +12,14 @@ concurrency:
   group: auto-loto7-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
-  run-scraper:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false   # 自前でGITHUB_TOKEN使うのでfalse
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
+- name: Set up Python
+  uses: actions/setup-python@v5
+  with:
+    python-version: '3.10'
+    cache: 'pip'
+    cache-dependency-path: |
+      requirements_core.txt
+      requirements_heavy.txt
 
       - name: Install dependencies and headless Chrome
         run: |
