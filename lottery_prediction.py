@@ -1740,20 +1740,80 @@ if __name__ == "__main__":
     bulk_predict_all_past_draws()
 
 
-def log_prediction_summary(evaluation_df, log_path="prediction_accuracy_log.txt"):
+# --- 進化ログ: 再学習サマリを1行で残す ---
+import csv
+from datetime import datetime
+import subprocess
+import json
+import os
+
+def _get_git_head():
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
+    except Exception:
+        return "N/A"
+
+def summarize_evaluation(evaluation_df):
+    """evaluate_prediction_accuracy_with_bonus の DataFrame を集計して dict を返す"""
     if evaluation_df is None or evaluation_df.empty:
-        print("[WARNING] 評価データが空です")
-        return
+        return None
+    s = {}
+    s["eval_rows"]        = int(len(evaluation_df))
+    s["max_main_match"]   = int(evaluation_df["本数字一致数"].max())
+    s["avg_main_match"]   = float(evaluation_df["本数字一致数"].mean())
+    s["max_bonus_match"]  = int(evaluation_df["ボーナス一致数"].max())
+    s["avg_bonus_match"]  = float(evaluation_df["ボーナス一致数"].mean())
+    # 等級分布
+    counts = evaluation_df["等級"].value_counts()
+    for r in ["1等","2等","3等","4等","5等","6等","該当なし"]:
+        s[f"rank_{r}"] = int(counts.get(r, 0))
+    # Precision / Recall / F1 は関数内の算出式を再利用してここで再計算
+    y_true, y_pred = [], []
+    for _, row in evaluation_df.iterrows():
+        actual = set(row["当選本数字"])
+        predicted = set(row["予測番号"])
+        for n in range(1, 38):
+            y_true.append(1 if n in actual else 0)
+            y_pred.append(1 if n in predicted else 0)
+    from sklearn.metrics import precision_score, recall_score, f1_score
+    s["precision"] = float(precision_score(y_true, y_pred, zero_division=0))
+    s["recall"]    = float(recall_score(y_true, y_pred, zero_division=0))
+    s["f1"]        = float(f1_score(y_true, y_pred, zero_division=0))
+    return s
 
-    with open(log_path, "a", encoding="utf-8") as f:
-        for _, row in evaluation_df.iterrows():
-            date = row["抽せん日"]
-            match = row["本数字一致数"]
-            bonus = row["ボーナス一致数"]
-            rank = row["等級"]
-            confidence = row.get("信頼度", "N/A")
-            pred = row["予測番号"]
+def write_evolution_log(evaluation_df, data_max_date, seed, model_dir, top_features=None,
+                        csv_path="logs/evolution.csv", json_dir="logs/evolution_detail"):
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    os.makedirs(json_dir, exist_ok=True)
 
-            f.write(f"{date}: 一致={match}本, ボーナス={bonus}, 等級={rank}, 信頼度={confidence}, 番号={pred}\n")
+    summary = summarize_evaluation(evaluation_df) or {}
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    head = _get_git_head()
 
-    print(f"[INFO] 予測精度履歴を {log_path} に追記しました")
+    row = {
+        "timestamp": now,
+        "data_max_date": str(data_max_date) if data_max_date is not None else "N/A",
+        "seed": seed,
+        "model_dir": model_dir,
+        "git_head": head,
+        **summary
+    }
+    if top_features:
+        row["top_features"] = "|".join(top_features)
+
+    # CSV 追記（ヘッダ自動）
+    header = list(row.keys())
+    write_header = not os.path.exists(csv_path)
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=header)
+        if write_header:
+            w.writeheader()
+        w.writerow(row)
+
+    # JSON でもスナップショット保存
+    json_name = datetime.now().strftime("%Y%m%d_%H%M%S") + ".json"
+    with open(os.path.join(json_dir, json_name), "w", encoding="utf-8") as jf:
+        json.dump(row, jf, ensure_ascii=False, indent=2)
+
+    print(f"[LOG] 再学習サマリを保存: {csv_path} / {json_name}")
+    return row
