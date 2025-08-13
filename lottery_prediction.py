@@ -1740,12 +1740,29 @@ if __name__ == "__main__":
     bulk_predict_all_past_draws()
 
 
-# --- 進化ログ: 再学習サマリを1行で残す ---
+def log_prediction_summary(evaluation_df, log_path="prediction_accuracy_log.txt"):
+    if evaluation_df is None or evaluation_df.empty:
+        print("[WARNING] 評価データが空です")
+        return
+
+    with open(log_path, "a", encoding="utf-8") as f:
+        for _, row in evaluation_df.iterrows():
+            date = row["抽せん日"]
+            match = row["本数字一致数"]
+            bonus = row["ボーナス一致数"]
+            rank = row["等級"]
+            confidence = row.get("信頼度", "N/A")
+            pred = row["予測番号"]
+
+            f.write(f"{date}: 一致={match}本, ボーナス={bonus}, 等級={rank}, 信頼度={confidence}, 番号={pred}\n")
+
+    print(f"[INFO] 予測精度履歴を {log_path} に追記しました")
+
+
+# === 再学習サマリ・進化ログ（追記） ==========================================
 import csv
 from datetime import datetime
 import subprocess
-import json
-import os
 
 def _get_git_head():
     try:
@@ -1754,35 +1771,56 @@ def _get_git_head():
         return "N/A"
 
 def summarize_evaluation(evaluation_df):
-    """evaluate_prediction_accuracy_with_bonus の DataFrame を集計して dict を返す"""
-    if evaluation_df is None or evaluation_df.empty:
+    """
+    evaluate_prediction_accuracy_with_bonus(...) が返す DataFrame を要約して dict を返す
+    期待列: ["本数字一致数","ボーナス一致数","等級","当選本数字","予測番号"]
+    """
+    try:
+        import pandas as pd  # 確実に pd があるように
+    except Exception:
+        pass
+    if evaluation_df is None or len(evaluation_df) == 0:
         return None
+
     s = {}
     s["eval_rows"]        = int(len(evaluation_df))
-    s["max_main_match"]   = int(evaluation_df["本数字一致数"].max())
-    s["avg_main_match"]   = float(evaluation_df["本数字一致数"].mean())
-    s["max_bonus_match"]  = int(evaluation_df["ボーナス一致数"].max())
-    s["avg_bonus_match"]  = float(evaluation_df["ボーナス一致数"].mean())
+    if "本数字一致数" in evaluation_df.columns:
+        s["max_main_match"]   = int(evaluation_df["本数字一致数"].max())
+        s["avg_main_match"]   = float(evaluation_df["本数字一致数"].mean())
+    if "ボーナス一致数" in evaluation_df.columns:
+        s["max_bonus_match"]  = int(evaluation_df["ボーナス一致数"].max())
+        s["avg_bonus_match"]  = float(evaluation_df["ボーナス一致数"].mean())
+
     # 等級分布
-    counts = evaluation_df["等級"].value_counts()
-    for r in ["1等","2等","3等","4等","5等","6等","該当なし"]:
-        s[f"rank_{r}"] = int(counts.get(r, 0))
-    # Precision / Recall / F1 は関数内の算出式を再利用してここで再計算
+    if "等級" in evaluation_df.columns:
+        counts = evaluation_df["等級"].value_counts()
+        for r in ["1等","2等","3等","4等","5等","6等","該当なし"]:
+            s[f"rank_{r}"] = int(counts.get(r, 0))
+
+    # Precision / Recall / F1 を番号レベルで算出（0除算は0扱い）
     y_true, y_pred = [], []
-    for _, row in evaluation_df.iterrows():
-        actual = set(row["当選本数字"])
-        predicted = set(row["予測番号"])
-        for n in range(1, 38):
-            y_true.append(1 if n in actual else 0)
-            y_pred.append(1 if n in predicted else 0)
-    from sklearn.metrics import precision_score, recall_score, f1_score
-    s["precision"] = float(precision_score(y_true, y_pred, zero_division=0))
-    s["recall"]    = float(recall_score(y_true, y_pred, zero_division=0))
-    s["f1"]        = float(f1_score(y_true, y_pred, zero_division=0))
+    if "当選本数字" in evaluation_df.columns and "予測番号" in evaluation_df.columns:
+        for _, row in evaluation_df.iterrows():
+            actual = set(row["当選本数字"]) if isinstance(row["当選本数字"], (list,set)) else set(row.get("当選本数字_list", []))  # 保険
+            predicted = set(row["予測番号"]) if isinstance(row["予測番号"], (list,set)) else set(row.get("予測番号_list", []))
+            # LOTO7 の番号範囲（1..37）に対して
+            for n in range(1, 38):
+                y_true.append(1 if n in actual else 0)
+                y_pred.append(1 if n in predicted else 0)
+        try:
+            from sklearn.metrics import precision_score, recall_score, f1_score
+            s["precision"] = float(precision_score(y_true, y_pred, zero_division=0))
+            s["recall"]    = float(recall_score(y_true, y_pred, zero_division=0))
+            s["f1"]        = float(f1_score(y_true, y_pred, zero_division=0))
+        except Exception:
+            s["precision"] = s["recall"] = s["f1"] = 0.0
     return s
 
-def write_evolution_log(evaluation_df, data_max_date, seed, model_dir, top_features=None,
-                        csv_path="logs/evolution.csv", json_dir="logs/evolution_detail"):
+def write_evolution_log(evaluation_df, data_max_date=None, seed=None, model_dir=None,
+                        top_features=None, csv_path="logs/evolution.csv", json_dir="logs/evolution_detail"):
+    """
+    再学習1回につきCSVに1行追記し、同内容をJSONスナップショットでも保存
+    """
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
     os.makedirs(json_dir, exist_ok=True)
 
@@ -1793,27 +1831,63 @@ def write_evolution_log(evaluation_df, data_max_date, seed, model_dir, top_featu
     row = {
         "timestamp": now,
         "data_max_date": str(data_max_date) if data_max_date is not None else "N/A",
-        "seed": seed,
-        "model_dir": model_dir,
+        "seed": seed if seed is not None else "",
+        "model_dir": model_dir if model_dir is not None else "",
         "git_head": head,
         **summary
     }
     if top_features:
-        row["top_features"] = "|".join(top_features)
+        row["top_features"] = "|".join(map(str, top_features))
 
-    # CSV 追記（ヘッダ自動）
-    header = list(row.keys())
+    # CSV追記（ヘッダ自動）
     write_header = not os.path.exists(csv_path)
+    header = list(row.keys())
     with open(csv_path, "a", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=header)
         if write_header:
             w.writeheader()
         w.writerow(row)
 
-    # JSON でもスナップショット保存
+    # JSONスナップショット
     json_name = datetime.now().strftime("%Y%m%d_%H%M%S") + ".json"
     with open(os.path.join(json_dir, json_name), "w", encoding="utf-8") as jf:
-        json.dump(row, jf, ensure_ascii=False, indent=2)
+        import json as _json
+        _json.dump(row, jf, ensure_ascii=False, indent=2)
 
     print(f"[LOG] 再学習サマリを保存: {csv_path} / {json_name}")
     return row
+
+def generate_evolution_graph_from_csv(csv_path="logs/evolution.csv", metric="f1", output_file="logs/evolution_graph.png"):
+    """
+    evolution.csv（write_evolution_logで作成）から metric の推移グラフを作成
+    """
+    try:
+        import pandas as _pd
+        import matplotlib.pyplot as plt
+    except Exception as e:
+        print("[WARNING] 可視化用ライブラリの読み込みに失敗:", e)
+        return
+
+    if not os.path.exists(csv_path):
+        print(f"[WARNING] 進化CSV {csv_path} が見つかりません")
+        return
+
+    df = _pd.read_csv(csv_path, encoding="utf-8")
+    if "timestamp" not in df.columns or metric not in df.columns:
+        print(f"[WARNING] CSVに必要な列がありません: timestamp / {metric}")
+        return
+
+    df["timestamp"] = _pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.sort_values("timestamp")
+    plt.figure(figsize=(10,6))
+    plt.plot(df["timestamp"], df[metric], marker="o")
+    plt.title(f"自己進化履歴（{metric} 推移）")
+    plt.xlabel("日時")
+    plt.ylabel(metric.upper())
+    plt.grid(True)
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_file)
+    plt.close()
+    print(f"[LOG] 進化グラフを保存: {output_file}")
+# === /再学習サマリ・進化ログ ここまで ==========================================
