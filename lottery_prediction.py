@@ -87,6 +87,18 @@ if platform.system() == "Windows":
 
 warnings.filterwarnings("ignore")
 
+
+def _clean_dir(directory):
+    """ディレクトリを空にする（存在すれば削除→再作成）"""
+    try:
+        if os.path.exists(directory):
+            shutil.rmtree(directory)
+    except Exception as e:
+        print(f"[WARN] 旧モデル削除に失敗: {directory}: {e}")
+    os.makedirs(directory, exist_ok=True)
+
+
+
 def set_global_seed(seed=42):
 
     random.seed(seed)
@@ -579,6 +591,7 @@ class LotoPredictor:
         self.model_dir = model_dir
         _clean_dir(self.model_dir)
         os.makedirs(self.model_dir, exist_ok=True)
+        os.makedirs(model_dir, exist_ok=True)
         set_global_seed(42)
         print("[INFO] データ前処理を開始")
 
@@ -667,11 +680,13 @@ class LotoPredictor:
         print("[INFO] TabNet モデルを訓練中")
         from tabnet_module import train_tabnet, save_tabnet_model
         self.tabnet_model = train_tabnet(X_train, y_train)
+        _clean_dir(os.path.join(self.model_dir, "tabnet_model"))
         save_tabnet_model(self.tabnet_model, os.path.join(self.model_dir, "tabnet_model"))
 
         print("[INFO] BNN モデルを訓練中")
         from bnn_module import train_bayesian_regression, save_bayesian_model
         self.bnn_model, self.bnn_guide = train_bayesian_regression(X_train, y_train, input_size)
+        _clean_dir(os.path.join(self.model_dir, "bnn_model"))
         save_bayesian_model(self.bnn_model, self.bnn_guide, os.path.join(self.model_dir, "bnn_model"))
 
         print("[INFO] AutoGluon モデルを訓練中")
@@ -679,6 +694,7 @@ class LotoPredictor:
             df_train = pd.DataFrame(X_train)
             df_train['target'] = y_train[:, i]
             ag_path = os.path.join(self.model_dir, f"autogluon_model_pos{i}")
+            _clean_dir(ag_path)
             predictor = TabularPredictor(label='target', path=ag_path, verbosity=0).fit(
                 df_train,
                 excluded_model_types=['KNN', 'NN_TORCH'],
