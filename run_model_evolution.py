@@ -56,7 +56,7 @@ def main():
 
     predictor = LotoPredictor(input_size=input_size, hidden_size=128, output_size=7)
     if df is not None:
-        predictor.train_model(df, accuracy_results=accuracy_df)
+        predictor.train_model(df, accuracy_results=accuracy_df, model_dir="models/latest")
     else:
         print("[WARN] 学習データが無いので train_model をスキップ")
 
