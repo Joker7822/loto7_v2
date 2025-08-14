@@ -74,6 +74,16 @@ import torch.backends.cudnn
 from datetime import datetime 
 from itertools import combinations
 import shutil
+
+def _clean_dir(path):
+    try:
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        elif os.path.exists(path):
+            os.remove(path)
+    except Exception as e:
+        print(f"[WARN] 旧モデル削除に失敗: {path}: {e}")
+
 import traceback
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import tensorflow as tf
@@ -436,7 +446,7 @@ def train_lstm_model(X_train, y_train, input_size, device):
     torch.onnx.export(
         model,
         dummy_input,
-        "lstm_model.onnx",
+        os.path.join(model_dir, "lstm_model.onnx"),
         input_names=["input"],
         output_names=["output"],
         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
@@ -548,15 +558,15 @@ class LotoPredictor:
         self.regression_models = [None] * 7
         
         # --- GANモデルロード（存在すれば） ---
-        if os.path.exists("gan_model.pth"):
+        if os.path.exists(os.path.join(model_dir, "gan_model.pth")):
             self.gan_model = LotoGAN()
-            self.gan_model.load_state_dict(torch.load("gan_model.pth"))
+            self.gan_model.load_state_dict(torch.load(os.path.join(model_dir, "gan_model.pth")))
             self.gan_model.eval()
             print("[INFO] GANモデルをロードしました")
 
         # --- PPOモデルロード（存在すれば） ---
-        if os.path.exists("ppo_model.zip"):
-            self.ppo_model = PPO.load("ppo_model")
+        if os.path.exists(os.path.join(model_dir, "ppo_model.zip")):
+            self.ppo_model = PPO.load(os.path.join(default_model_dir, "ppo_model.zip"))
             print("[INFO] PPOモデルをロードしました")
 
     def load_onnx_model(self, onnx_path="lstm_model.onnx"):
@@ -575,7 +585,8 @@ class LotoPredictor:
         output = self.onnx_session.run(None, {input_name: X.astype(np.float32)})
         return output[0]
 
-    def train_model(self, data, accuracy_results=None, model_dir="models/tmp"):
+    def train_model(self, data, accuracy_results=None, model_dir="models/latest"):
+        _clean_dir(model_dir)
         os.makedirs(model_dir, exist_ok=True)
         set_global_seed(42)
         print("[INFO] データ前処理を開始")
@@ -644,7 +655,7 @@ class LotoPredictor:
         from diffusion_module import train_diffusion_ddpm
         real_data_bin = convert_numbers_to_binary_vectors(data)
         self.diffusion_model, self.diffusion_betas, self.diffusion_alphas_cumprod = train_diffusion_ddpm(real_data_bin)
-        torch.save(self.diffusion_model.state_dict(), os.path.join(model_dir, "diffusion_model.pth"))
+        torch.save(self.diffusion_model.state_dict(), os.path.join(model_dir, os.path.join(model_dir, "diffusion_model.pth")))
 
         print("[INFO] GNNモデルを訓練中")
         from gnn_core import LotoGNN, build_cooccurrence_graph
@@ -660,16 +671,18 @@ class LotoPredictor:
             optimizer.zero_grad()
             if epoch % 50 == 0:
                 print(f"[GNN] Epoch {epoch} Loss: {loss.item():.4f}")
-        torch.save(self.gnn_model.state_dict(), os.path.join(model_dir, "gnn_model.pth"))
+        torch.save(self.gnn_model.state_dict(), os.path.join(model_dir, os.path.join(model_dir, "gnn_model.pth")))
 
         print("[INFO] TabNet モデルを訓練中")
         from tabnet_module import train_tabnet, save_tabnet_model
         self.tabnet_model = train_tabnet(X_train, y_train)
+        _clean_dir(os.path.join(model_dir, "tabnet_model"))
         save_tabnet_model(self.tabnet_model, os.path.join(model_dir, "tabnet_model"))
 
         print("[INFO] BNN モデルを訓練中")
         from bnn_module import train_bayesian_regression, save_bayesian_model
         self.bnn_model, self.bnn_guide = train_bayesian_regression(X_train, y_train, input_size)
+        _clean_dir(os.path.join(model_dir, "bnn_model"))
         save_bayesian_model(self.bnn_model, self.bnn_guide, os.path.join(model_dir, "bnn_model"))
 
         print("[INFO] AutoGluon モデルを訓練中")
@@ -677,6 +690,7 @@ class LotoPredictor:
             df_train = pd.DataFrame(X_train)
             df_train['target'] = y_train[:, i]
             ag_path = os.path.join(model_dir, f"autogluon_model_pos{i}")
+            _clean_dir(ag_path)
             predictor = TabularPredictor(label='target', path=ag_path, verbosity=0).fit(
                 df_train,
                 excluded_model_types=['KNN', 'NN_TORCH'],
@@ -722,7 +736,7 @@ class LotoPredictor:
             if (epoch + 1) % 500 == 0:
                 print(f"[GAN] Epoch {epoch+1} D: {d_loss.item():.4f} G: {g_loss.item():.4f}")
         self.gan_model = gan
-        torch.save(self.gan_model.state_dict(), os.path.join(model_dir, "gan_model.pth"))
+        torch.save(self.gan_model.state_dict(), os.path.join(model_dir, os.path.join(model_dir, "gan_model.pth")))
 
         print("[INFO] PPO モデルを訓練中")
         from stable_baselines3 import PPO
@@ -734,7 +748,7 @@ class LotoPredictor:
 
         self.ppo_model = PPO("MlpPolicy", env, seed=42, verbose=0)
         self.ppo_model.learn(total_timesteps=50000)
-        self.ppo_model.save(os.path.join(model_dir, "ppo_model.zip"))
+        self.ppo_model.save(os.path.join(model_dir, os.path.join(model_dir, "ppo_model.zip")))
 
         print("[INFO] 全モデルの訓練と保存が完了しました")
 
@@ -747,7 +761,7 @@ class LotoPredictor:
             print("[INFO] LSTM (ONNX) モデルをロードしました")
 
         # GAN
-        gan_path = os.path.join(model_dir, "gan_model.pth")
+        gan_path = os.path.join(model_dir, os.path.join(model_dir, "gan_model.pth"))
         if os.path.exists(gan_path):
             from gnn_core import LotoGAN
             self.gan_model = LotoGAN()
@@ -756,13 +770,13 @@ class LotoPredictor:
             print("[INFO] GANモデルをロードしました")
 
         # PPO
-        ppo_path = os.path.join(model_dir, "ppo_model.zip")
+        ppo_path = os.path.join(model_dir, os.path.join(model_dir, "ppo_model.zip"))
         if os.path.exists(ppo_path):
             self.ppo_model = PPO.load(ppo_path)
             print("[INFO] PPOモデルをロードしました")
 
         # Diffusion
-        diff_path = os.path.join(model_dir, "diffusion_model.pth")
+        diff_path = os.path.join(model_dir, os.path.join(model_dir, "diffusion_model.pth"))
         if os.path.exists(diff_path):
             from diffusion_module import DiffusionModel, get_diffusion_constants
             self.diffusion_model = DiffusionModel()
@@ -772,7 +786,7 @@ class LotoPredictor:
             print("[INFO] Diffusion モデルをロードしました")
 
         # GNN
-        gnn_path = os.path.join(model_dir, "gnn_model.pth")
+        gnn_path = os.path.join(model_dir, os.path.join(model_dir, "gnn_model.pth"))
         if os.path.exists(gnn_path):
             from gnn_core import LotoGNN
             self.gnn_model = LotoGNN()
@@ -1668,10 +1682,10 @@ def bulk_predict_all_past_draws():
             if os.path.exists("lstm_model.onnx"):
                 shutil.copy("lstm_model.onnx", os.path.join(model_dir, "lstm_model.onnx"))
 
-            save_if_exists(predictor.gan_model, lambda p: torch.save(predictor.gan_model.state_dict(), p), os.path.join(model_dir, "gan_model.pth"))
-            save_if_exists(predictor.ppo_model, lambda p: predictor.ppo_model.save(p), os.path.join(model_dir, "ppo_model.zip"))
-            save_if_exists(predictor.diffusion_model, lambda p: torch.save(predictor.diffusion_model.state_dict(), p), os.path.join(model_dir, "diffusion_model.pth"))
-            save_if_exists(predictor.gnn_model, lambda p: torch.save(predictor.gnn_model.state_dict(), p), os.path.join(model_dir, "gnn_model.pth"))
+            save_if_exists(predictor.gan_model, lambda p: torch.save(predictor.gan_model.state_dict(), p), os.path.join(model_dir, os.path.join(model_dir, "gan_model.pth")))
+            save_if_exists(predictor.ppo_model, lambda p: predictor.ppo_model.save(p), os.path.join(model_dir, os.path.join(model_dir, "ppo_model.zip")))
+            save_if_exists(predictor.diffusion_model, lambda p: torch.save(predictor.diffusion_model.state_dict(), p), os.path.join(model_dir, os.path.join(model_dir, "diffusion_model.pth")))
+            save_if_exists(predictor.gnn_model, lambda p: torch.save(predictor.gnn_model.state_dict(), p), os.path.join(model_dir, os.path.join(model_dir, "gnn_model.pth")))
 
             if getattr(predictor, "tabnet_model", None):
                 from tabnet_module import save_tabnet_model
