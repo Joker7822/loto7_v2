@@ -33,23 +33,25 @@ jobs:
             requirements_heavy.txt
 
       - name: Install dependencies and headless Chrome
+        shell: bash
         run: |
+          set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update -y
           sudo apt-get install -y \
             wget unzip xvfb rsync \
             libglib2.0-0 libnss3 libxi6 libxcomposite1 libxss1 \
             libatk-bridge2.0-0 libgtk-3-0 libasound2t64
-      
+
           # Chrome 138
-          wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chrome-linux64.zip
-          unzip chrome-linux64.zip
+          wget -q https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chrome-linux64.zip
+          unzip -q chrome-linux64.zip
           sudo mv chrome-linux64 /opt/chrome
           sudo ln -sf /opt/chrome/chrome /usr/bin/google-chrome
-      
+
           # ChromeDriver 138
-          wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chromedriver-linux64.zip
-          unzip chromedriver-linux64.zip
+          wget -q https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chromedriver-linux64.zip
+          unzip -q chromedriver-linux64.zip
           sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
           sudo chmod +x /usr/local/bin/chromedriver
 
@@ -74,17 +76,19 @@ jobs:
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
 
       - name: Commit and push loto7.csv if changed
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
           BRANCH="${{ github.ref_name }}"
           git fetch origin
           git stash --include-untracked || true
           git checkout "$BRANCH"
           git pull --rebase origin "$BRANCH" || true
+
           # rebase中に競合があれば、生成物は the theirs を優先（oursにしたい場合は --ours に変更）
           if [ -d .git/rebase-apply ] || [ -d .git/rebase-merge ]; then
-            git checkout --theirs loto7.csv || true
-            git add loto7.csv || true
+            if [ -f loto7.csv ]; then git checkout --theirs loto7.csv || true; fi
+            if [ -f loto7.csv ]; then git add loto7.csv || true; fi
             git rebase --continue || true
           fi
           git stash pop || true
@@ -98,22 +102,29 @@ jobs:
           fi
 
       - name: Run predictor script
+        # セカンダリRepo同期を run_model_evolution.py 内で使う場合はENVを渡す
+        env:
+          SECONDARY_REPO: Joker7822/loto7
+          SECONDARY_BRANCH: main
+          MODEL_REPO_TOKEN: ${{ secrets.MODEL_REPO_TOKEN }}
         run: xvfb-run -a python run_model_evolution.py
 
       - name: Commit and push prediction results if changed
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
           BRANCH="${{ github.ref_name }}"
           git fetch origin
           git stash --include-untracked || true
           git checkout "$BRANCH"
           git pull --rebase origin "$BRANCH" || true
+
           # rebase中の競合は生成物を the theirs 優先で自動解消
           if [ -d .git/rebase-apply ] || [ -d .git/rebase-merge ]; then
-            git checkout --theirs loto7_predictions.csv loto7_prediction_evaluation_with_bonus.csv \
-                                   loto7_evaluation_summary.txt self_predictions.csv || true
-            git add loto7_predictions.csv loto7_prediction_evaluation_with_bonus.csv \
-                    loto7_evaluation_summary.txt self_predictions.csv || true
+            for f in loto7_predictions.csv loto7_prediction_evaluation_with_bonus.csv loto7_evaluation_summary.txt self_predictions.csv; do
+              if [ -f "$f" ]; then git checkout --theirs "$f" || true; fi
+              if [ -f "$f" ]; then git add "$f" || true; fi
+            done
             git rebase --continue || true
           fi
           git stash pop || true
@@ -137,8 +148,9 @@ jobs:
           SECONDARY_REPO: Joker7822/loto7        # ← 保存先レポジトリ
           SECONDARY_BRANCH: main                 # ← 保存先ブランチ
           MODEL_REPO_TOKEN: ${{ secrets.MODEL_REPO_TOKEN }}  # ← PAT をSecretsに登録
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
           if [ -z "${MODEL_REPO_TOKEN}" ]; then
             echo "MODEL_REPO_TOKEN is not set. Skip syncing."
             exit 0
@@ -156,7 +168,7 @@ jobs:
 
           # 1) models/latest を上書き同期
           mkdir -p model_repo/models/latest
-          rsync -a --delete models/latest/ model_repo/models/latest/
+          rsync -a --delete models/latest/ model_repo/models/latest/ || true
 
           # 2) predictions を上書き同期（存在するファイルのみ）
           mkdir -p model_repo/predictions
