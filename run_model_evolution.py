@@ -98,6 +98,8 @@ def main():
     except Exception as e:
         print("[WARN] Git 反映をスキップ:", e)
 
+    print("[STEP 8] セカンダリレポジトリへモデルを同期（環境変数で制御）")
+    sync_to_secondary_repo(models_dir="models/latest")
     print("[✅ 完了] モデルの強化学習とログ出力が完了しました")
 
 if __name__ == "__main__":
@@ -105,3 +107,75 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         print(f"[ERROR] モデル再学習中にエラー: {e}")
+
+
+
+import subprocess
+import shutil
+
+def sync_to_secondary_repo(models_dir="models/latest"):
+    """
+    models/latest を別リポジトリへ上書き保存（環境変数で制御）
+    必要な環境変数:
+      - SECONDARY_REPO      例: "Joker7822/loto7"
+      - SECONDARY_BRANCH    例: "main"（省略可: デフォルト main）
+      - MODEL_REPO_TOKEN    PAT (repo 書き込み権限)
+    """
+    secondary_repo = os.environ.get("SECONDARY_REPO")
+    token = os.environ.get("MODEL_REPO_TOKEN")
+    branch = os.environ.get("SECONDARY_BRANCH", "main")
+
+    if not secondary_repo or not token:
+        print("[SYNC] SECONDARY_REPO or MODEL_REPO_TOKEN が未設定のためスキップします。")
+        return
+
+    if not os.path.isdir(models_dir):
+        print(f"[SYNC] 同期元 {models_dir} が存在しないためスキップします。")
+        return
+
+    repo_dir = "model_repo_sync_tmp"
+    try:
+        if os.path.isdir(repo_dir):
+            shutil.rmtree(repo_dir)
+
+        print(f"[SYNC] Clone {secondary_repo}@{branch}")
+        subprocess.run([
+            "git", "clone", "--depth", "1",
+            f"https://x-access-token:{token}@github.com/{secondary_repo}.git",
+            repo_dir
+        ], check=True)
+
+        # checkout branch (create if missing)
+        subprocess.run(["git", "-C", repo_dir, "checkout", branch], check=False)
+
+        target_dir = os.path.join(repo_dir, "models", "latest")
+        os.makedirs(target_dir, exist_ok=True)
+
+        print("[SYNC] コピー: models/latest -> secondary repo")
+        # 上書きコピー（既存削除 → コピー）
+        if os.path.isdir(target_dir):
+            shutil.rmtree(target_dir)
+        shutil.copytree(models_dir, target_dir)
+
+        # 変更検知 → コミット＆プッシュ
+        subprocess.run(["git", "-C", repo_dir, "add", "-A"], check=True)
+        # 差分がない場合はコミットしない
+        diff = subprocess.run(["git", "-C", repo_dir, "diff", "--cached", "--quiet"])
+        if diff.returncode == 0:
+            print("[SYNC] 変更なし。push をスキップします。")
+            return
+
+        subprocess.run(["git", "-C", repo_dir, "config", "user.name", "github-actions"], check=True)
+        subprocess.run(["git", "-C", repo_dir, "config", "user.email", "github-actions@github.com"], check=True)
+        msg = f"Sync latest model from {os.environ.get('GITHUB_REPOSITORY','local')}"
+        subprocess.run(["git", "-C", repo_dir, "commit", "-m", msg], check=True)
+        subprocess.run(["git", "-C", repo_dir, "push", "origin", branch], check=True)
+        print("[SYNC] Secondary repo へ同期完了。")
+    except Exception as e:
+        print(f"[SYNC][WARN] 同期中にエラー: {e}")
+    finally:
+        try:
+            if os.path.isdir(repo_dir):
+                shutil.rmtree(repo_dir)
+        except Exception:
+            pass
