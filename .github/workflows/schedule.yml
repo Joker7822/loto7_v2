@@ -34,17 +34,19 @@ jobs:
 
       - name: Install dependencies and headless Chrome
         run: |
-          sudo apt update
-          sudo apt install -y wget unzip xvfb rsync \   # ★ rsync を追加
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            wget unzip xvfb rsync \
             libglib2.0-0 libnss3 libxi6 libxcomposite1 libxss1 \
             libatk-bridge2.0-0 libgtk-3-0 libasound2t64
-
+      
           # Chrome 138
           wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chrome-linux64.zip
           unzip chrome-linux64.zip
           sudo mv chrome-linux64 /opt/chrome
           sudo ln -sf /opt/chrome/chrome /usr/bin/google-chrome
-
+      
           # ChromeDriver 138
           wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chromedriver-linux64.zip
           unzip chromedriver-linux64.zip
