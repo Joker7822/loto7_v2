@@ -13,3 +13,4 @@ pyro-ppl
 pytorch_tabnet
 shimmy==2.0
 gymnasium
+rsync
