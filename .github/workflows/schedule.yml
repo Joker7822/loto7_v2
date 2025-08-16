@@ -127,3 +127,47 @@ jobs:
             git commit -m "Auto update prediction results [skip ci]"
             git push origin HEAD:"$BRANCH"
           fi
+
+      # === NEW: 同期先の別レポジトリ（例: Joker7822/loto7）にも models/latest を保存 ===
+      - name: Sync models to secondary repo (Joker7822/loto7)
+        if: always()
+        env:
+          SECONDARY_REPO: Joker7822/loto7        # ← 保存先をここで指定
+          SECONDARY_BRANCH: main                 # ← 保存先ブランチ
+          MODEL_REPO_TOKEN: ${{ secrets.MODEL_REPO_TOKEN }}  # ← PAT をSecretsに登録
+        run: |
+          set -e
+          if [ -z "${MODEL_REPO_TOKEN}" ]; then
+            echo "MODEL_REPO_TOKEN is not set. Skip syncing."
+            exit 0
+          fi
+
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          # Clone secondary repo
+          rm -rf model_repo
+          git clone --depth 1 "https://x-access-token:${MODEL_REPO_TOKEN}@github.com/${SECONDARY_REPO}.git" model_repo
+          cd model_repo
+          git checkout "${SECONDARY_BRANCH}" || git checkout -b "${SECONDARY_BRANCH}"
+          cd ..
+
+          # Copy models/latest into secondary repo (overwrite)
+          mkdir -p model_repo/models/latest
+          rsync -a --delete models/latest/ model_repo/models/latest/
+
+          # (任意) 予測成果物も同期したい場合は以下のコメントアウトを外す
+          # mkdir -p model_repo/predictions
+          # cp -f loto7_predictions.csv model_repo/predictions/ || true
+          # cp -f loto7_prediction_evaluation_with_bonus.csv model_repo/predictions/ || true
+          # cp -f loto7_evaluation_summary.txt model_repo/predictions/ || true
+          # cp -f self_predictions.csv model_repo/predictions/ || true
+
+          cd model_repo
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to sync to ${SECONDARY_REPO}"
+          else
+            git commit -m "Sync latest model from ${GITHUB_REPOSITORY} ($(date -u +'%Y-%m-%dT%H:%M:%SZ')) [skip ci]"
+            git push origin "${SECONDARY_BRANCH}"
+          fi
