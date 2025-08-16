@@ -35,7 +35,7 @@ jobs:
       - name: Install dependencies and headless Chrome
         run: |
           sudo apt update
-          sudo apt install -y wget unzip xvfb \
+          sudo apt install -y wget unzip xvfb rsync \   # ★ rsync を追加
             libglib2.0-0 libnss3 libxi6 libxcomposite1 libxss1 \
             libatk-bridge2.0-0 libgtk-3-0 libasound2t64
 
@@ -128,11 +128,11 @@ jobs:
             git push origin HEAD:"$BRANCH"
           fi
 
-      # === NEW: 同期先の別レポジトリ（例: Joker7822/loto7）にも models/latest を保存 ===
-      - name: Sync models to secondary repo (Joker7822/loto7)
+      # === Sync models + predictions to secondary repo (Joker7822/loto7) ===
+      - name: Sync models & predictions to secondary repo
         if: always()
         env:
-          SECONDARY_REPO: Joker7822/loto7        # ← 保存先をここで指定
+          SECONDARY_REPO: Joker7822/loto7        # ← 保存先レポジトリ
           SECONDARY_BRANCH: main                 # ← 保存先ブランチ
           MODEL_REPO_TOKEN: ${{ secrets.MODEL_REPO_TOKEN }}  # ← PAT をSecretsに登録
         run: |
@@ -152,22 +152,23 @@ jobs:
           git checkout "${SECONDARY_BRANCH}" || git checkout -b "${SECONDARY_BRANCH}"
           cd ..
 
-          # Copy models/latest into secondary repo (overwrite)
+          # 1) models/latest を上書き同期
           mkdir -p model_repo/models/latest
           rsync -a --delete models/latest/ model_repo/models/latest/
 
-          # (任意) 予測成果物も同期したい場合は以下のコメントアウトを外す
-          # mkdir -p model_repo/predictions
-          # cp -f loto7_predictions.csv model_repo/predictions/ || true
-          # cp -f loto7_prediction_evaluation_with_bonus.csv model_repo/predictions/ || true
-          # cp -f loto7_evaluation_summary.txt model_repo/predictions/ || true
-          # cp -f self_predictions.csv model_repo/predictions/ || true
+          # 2) predictions を上書き同期（存在するファイルのみ）
+          mkdir -p model_repo/predictions
+          for f in loto7_predictions.csv loto7_prediction_evaluation_with_bonus.csv loto7_evaluation_summary.txt self_predictions.csv; do
+            if [ -f "$f" ]; then
+              cp -f "$f" "model_repo/predictions/"
+            fi
+          done
 
           cd model_repo
           git add -A
           if git diff --cached --quiet; then
             echo "No changes to sync to ${SECONDARY_REPO}"
           else
-            git commit -m "Sync latest model from ${GITHUB_REPOSITORY} ($(date -u +'%Y-%m-%dT%H:%M:%SZ')) [skip ci]"
+            git commit -m "Sync latest model & predictions from ${GITHUB_REPOSITORY} ($(date -u +'%Y-%m-%dT%H:%M:%SZ')) [skip ci]"
             git push origin "${SECONDARY_BRANCH}"
           fi
