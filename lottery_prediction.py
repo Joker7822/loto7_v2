@@ -81,29 +81,6 @@ from gym.utils import seeding
 import time
 import subprocess
 
-# === Meta integration (calibration, meta-learner, coverage-aware selection) ===
-import sys, os
-try:
-    sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-except Exception:
-    sys.path.append(os.getcwd())
-from meta_integration import train_assets_from_eval, enhance_predictions
-
-# === Helper: ensure history_data is available ===
-def _load_history_from_data(data, latest_data=None):
-    try:
-        df = data.copy()
-        if latest_data is not None and "抽せん日" in latest_data.columns:
-            target_date = latest_data["抽せん日"].max()
-            return df[df["抽せん日"] < target_date]
-        if "抽せん日" in df.columns:
-            last_date = df["抽せん日"].max()
-            return df[df["抽せん日"] < last_date]
-        return df.iloc[:-1] if len(df) > 0 else df
-    except Exception:
-        return data
-
-
 # Windows環境のイベントループポリシーを設定
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -1371,16 +1348,7 @@ def main_with_improved_predictions():
                     print("[ERROR] 予測に失敗したため処理を中断します。")
                     return
 
-                assets = train_assets_from_eval("loto7_prediction_evaluation_with_bonus.csv")
-                # Ensure history_data
-                try:
-                    history_data
-                except NameError:
-                    try:
-                        history_data = _load_history_from_data(data, latest_data)
-                    except Exception:
-                        history_data = _load_history_from_data(data)
-                verified_predictions = enhance_predictions(list(zip(predictions, confidence_scores)), history_data, assets, top_k=5)
+                verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), history_data)
 
                 save_self_predictions(verified_predictions)
 
@@ -1404,16 +1372,7 @@ def main_with_improved_predictions():
                 print("[ERROR] 予測に失敗したため処理を中断します。")
                 return
 
-            assets = train_assets_from_eval("loto7_prediction_evaluation_with_bonus.csv")
-            # Ensure history_data
-            try:
-                history_data
-            except NameError:
-                try:
-                    history_data = _load_history_from_data(data, latest_data)
-                except Exception:
-                    history_data = _load_history_from_data(data)
-            verified_predictions = enhance_predictions(list(zip(predictions, confidence_scores)), history_data, assets, top_k=5)
+            verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), history_data)
 
             save_self_predictions(verified_predictions)
 
@@ -1781,16 +1740,7 @@ def bulk_predict_all_past_draws():
             print(f"[ERROR] {test_date_str} の予測に失敗しました")
             continue
 
-        assets = train_assets_from_eval("loto7_prediction_evaluation_with_bonus.csv")
-        # Ensure history_data
-        try:
-            history_data
-        except NameError:
-            try:
-                history_data = _load_history_from_data(data, latest_data)
-            except Exception:
-                history_data = _load_history_from_data(data)
-        verified_predictions = enhance_predictions(list(zip(predictions, confidence_scores)), history_data, assets, top_k=5)
+        verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), train_data)
         save_self_predictions(verified_predictions)
         save_predictions_to_csv(verified_predictions, test_date)
         git_commit_and_push("loto7_predictions.csv", "Auto update loto7_predictions.csv [skip ci]")
@@ -1824,16 +1774,7 @@ def bulk_predict_all_past_draws():
 
                 predictions, confidence_scores = predictor.predict(latest_data)
                 if predictions is not None:
-                    assets = train_assets_from_eval("loto7_prediction_evaluation_with_bonus.csv")
-                    # Ensure history_data
-                    try:
-                        history_data
-                    except NameError:
-                        try:
-                            history_data = _load_history_from_data(data, latest_data)
-                        except Exception:
-                            history_data = _load_history_from_data(data)
-                    verified_predictions = enhance_predictions(list(zip(predictions, confidence_scores)), history_data, assets, top_k=5)
+                    verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), train_data)
                     save_self_predictions(verified_predictions)
                     save_predictions_to_csv(verified_predictions, future_date)
                     git_commit_and_push("loto7_predictions.csv", "Auto predict future draw [skip ci]")
