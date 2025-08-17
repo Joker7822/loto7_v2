@@ -1827,7 +1827,6 @@ def log_prediction_summary(evaluation_df, log_path="prediction_accuracy_log.txt"
 # === 再学習サマリ・進化ログ（追記） ==========================================
 import csv
 from datetime import datetime
-\1
 
 # === Meta integration (calibration, meta-learner, coverage-aware selection) ===
 import sys, os
