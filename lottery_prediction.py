@@ -79,7 +79,17 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import tensorflow as tf
 from gym.utils import seeding
 import time
-import subprocess
+\1
+
+# === Meta integration (calibration, meta-learner, coverage-aware selection) ===
+import sys, os
+try:
+    # Ensure we can import from the working directory (where meta_integration.py lives)
+    sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+except Exception:
+    sys.path.append(os.getcwd())
+from meta_integration import train_assets_from_eval, enhance_predictions
+
 
 # Windows環境のイベントループポリシーを設定
 if platform.system() == "Windows":
@@ -1348,7 +1358,8 @@ def main_with_improved_predictions():
                     print("[ERROR] 予測に失敗したため処理を中断します。")
                     return
 
-                verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), history_data)
+                assets = train_assets_from_eval("loto7_prediction_evaluation_with_bonus.csv")
+                verified_predictions = enhance_predictions(list(zip(predictions, confidence_scores)), history_data, assets, top_k=5)
 
                 save_self_predictions(verified_predictions)
 
@@ -1372,7 +1383,8 @@ def main_with_improved_predictions():
                 print("[ERROR] 予測に失敗したため処理を中断します。")
                 return
 
-            verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), history_data)
+            assets = train_assets_from_eval("loto7_prediction_evaluation_with_bonus.csv")
+            verified_predictions = enhance_predictions(list(zip(predictions, confidence_scores)), history_data, assets, top_k=5)
 
             save_self_predictions(verified_predictions)
 
@@ -1740,7 +1752,8 @@ def bulk_predict_all_past_draws():
             print(f"[ERROR] {test_date_str} の予測に失敗しました")
             continue
 
-        verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), train_data)
+        assets = train_assets_from_eval("loto7_prediction_evaluation_with_bonus.csv")
+        verified_predictions = enhance_predictions(list(zip(predictions, confidence_scores)), history_data, assets, top_k=5)
         save_self_predictions(verified_predictions)
         save_predictions_to_csv(verified_predictions, test_date)
         git_commit_and_push("loto7_predictions.csv", "Auto update loto7_predictions.csv [skip ci]")
@@ -1774,7 +1787,8 @@ def bulk_predict_all_past_draws():
 
                 predictions, confidence_scores = predictor.predict(latest_data)
                 if predictions is not None:
-                    verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), train_data)
+                    assets = train_assets_from_eval("loto7_prediction_evaluation_with_bonus.csv")
+                    verified_predictions = enhance_predictions(list(zip(predictions, confidence_scores)), history_data, assets, top_k=5)
                     save_self_predictions(verified_predictions)
                     save_predictions_to_csv(verified_predictions, future_date)
                     git_commit_and_push("loto7_predictions.csv", "Auto predict future draw [skip ci]")
@@ -1816,7 +1830,17 @@ def log_prediction_summary(evaluation_df, log_path="prediction_accuracy_log.txt"
 # === 再学習サマリ・進化ログ（追記） ==========================================
 import csv
 from datetime import datetime
-import subprocess
+\1
+
+# === Meta integration (calibration, meta-learner, coverage-aware selection) ===
+import sys, os
+try:
+    # Ensure we can import from the working directory (where meta_integration.py lives)
+    sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+except Exception:
+    sys.path.append(os.getcwd())
+from meta_integration import train_assets_from_eval, enhance_predictions
+
 
 def _get_git_head():
     try:
