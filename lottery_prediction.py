@@ -79,13 +79,29 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import tensorflow as tf
 from gym.utils import seeding
 import time
+import subprocess
+
+# === Meta integration (calibration, meta-learner, coverage-aware selection) ===
 import sys, os
 try:
-    # Ensure we can import from the working directory (where meta_integration.py lives)
     sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 except Exception:
     sys.path.append(os.getcwd())
 from meta_integration import train_assets_from_eval, enhance_predictions
+
+# === Helper: ensure history_data is available ===
+def _load_history_from_data(data, latest_data=None):
+    try:
+        df = data.copy()
+        if latest_data is not None and "抽せん日" in latest_data.columns:
+            target_date = latest_data["抽せん日"].max()
+            return df[df["抽せん日"] < target_date]
+        if "抽せん日" in df.columns:
+            last_date = df["抽せん日"].max()
+            return df[df["抽せん日"] < last_date]
+        return df.iloc[:-1] if len(df) > 0 else df
+    except Exception:
+        return data
 
 
 # Windows環境のイベントループポリシーを設定
@@ -1356,6 +1372,14 @@ def main_with_improved_predictions():
                     return
 
                 assets = train_assets_from_eval("loto7_prediction_evaluation_with_bonus.csv")
+                # Ensure history_data
+                try:
+                    history_data
+                except NameError:
+                    try:
+                        history_data = _load_history_from_data(data, latest_data)
+                    except Exception:
+                        history_data = _load_history_from_data(data)
                 verified_predictions = enhance_predictions(list(zip(predictions, confidence_scores)), history_data, assets, top_k=5)
 
                 save_self_predictions(verified_predictions)
@@ -1381,6 +1405,14 @@ def main_with_improved_predictions():
                 return
 
             assets = train_assets_from_eval("loto7_prediction_evaluation_with_bonus.csv")
+            # Ensure history_data
+            try:
+                history_data
+            except NameError:
+                try:
+                    history_data = _load_history_from_data(data, latest_data)
+                except Exception:
+                    history_data = _load_history_from_data(data)
             verified_predictions = enhance_predictions(list(zip(predictions, confidence_scores)), history_data, assets, top_k=5)
 
             save_self_predictions(verified_predictions)
@@ -1750,6 +1782,14 @@ def bulk_predict_all_past_draws():
             continue
 
         assets = train_assets_from_eval("loto7_prediction_evaluation_with_bonus.csv")
+        # Ensure history_data
+        try:
+            history_data
+        except NameError:
+            try:
+                history_data = _load_history_from_data(data, latest_data)
+            except Exception:
+                history_data = _load_history_from_data(data)
         verified_predictions = enhance_predictions(list(zip(predictions, confidence_scores)), history_data, assets, top_k=5)
         save_self_predictions(verified_predictions)
         save_predictions_to_csv(verified_predictions, test_date)
@@ -1785,6 +1825,14 @@ def bulk_predict_all_past_draws():
                 predictions, confidence_scores = predictor.predict(latest_data)
                 if predictions is not None:
                     assets = train_assets_from_eval("loto7_prediction_evaluation_with_bonus.csv")
+                    # Ensure history_data
+                    try:
+                        history_data
+                    except NameError:
+                        try:
+                            history_data = _load_history_from_data(data, latest_data)
+                        except Exception:
+                            history_data = _load_history_from_data(data)
                     verified_predictions = enhance_predictions(list(zip(predictions, confidence_scores)), history_data, assets, top_k=5)
                     save_self_predictions(verified_predictions)
                     save_predictions_to_csv(verified_predictions, future_date)
@@ -1827,16 +1875,7 @@ def log_prediction_summary(evaluation_df, log_path="prediction_accuracy_log.txt"
 # === 再学習サマリ・進化ログ（追記） ==========================================
 import csv
 from datetime import datetime
-
-# === Meta integration (calibration, meta-learner, coverage-aware selection) ===
-import sys, os
-try:
-    # Ensure we can import from the working directory (where meta_integration.py lives)
-    sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-except Exception:
-    sys.path.append(os.getcwd())
-from meta_integration import train_assets_from_eval, enhance_predictions
-
+import subprocess
 
 def _get_git_head():
     try:
