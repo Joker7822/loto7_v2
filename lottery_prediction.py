@@ -345,6 +345,17 @@ def preprocess_data(data):
         print("エラー: 特徴量生成後のデータが空です。データのフォーマットを確認してください。")
         return None, None, None
 
+def _preprocess_data_safe(df):
+    """Always return a 3-tuple (X, y, scaler); on failure, (None, None, None)."""
+    try:
+        res = preprocess_data(df)
+        if isinstance(res, tuple) and len(res) == 3:
+            return res
+        return (None, None, None)
+    except Exception as e:
+        print(f"[SAFE] preprocess_data failed: {e}")
+        return (None, None, None)
+
     print("=== 特徴量作成後のデータ ===")
     print(processed_data.head())
 
@@ -720,7 +731,7 @@ class LotoPredictor:
                 new_data = pd.DataFrame(new_rows)
                 data = pd.concat([data, new_data], ignore_index=True)
 
-        X, y, self.scaler = preprocess_data(data)
+        X, y, self.scaler = _preprocess_data_safe(data)
         if X is None or y is None:
             print("[ERROR] 前処理後のデータが空です")
             return
@@ -999,8 +1010,6 @@ class LotoPredictor:
             model.fit(Xi, yi)
             self.meta_models[i] = (model, keys)
         print(f"[STACK] メタモデル学習完了 (#base={len(keys)}) → keys={keys}")
-        None, None
-
         print(f"[DEBUG] 予測用データの shape: {X.shape}")
 
         freq_score = calculate_number_frequencies(latest_data)
@@ -1052,8 +1061,8 @@ class LotoPredictor:
                     base_dict["bnn"] = bnn_preds
                 except Exception: pass
                 final_predictions = stacking_predict_block(self, X, base_dict)
-        
-                numbers = np.round(pred).astype(int)
+                for pred in final_predictions:
+                    numbers = np.round(pred).astype(int)
                 numbers = np.clip(numbers, 1, 37)
                 numbers = np.sort(numbers)
                 append_prediction(numbers, base_confidence=1.0)
@@ -2048,3 +2057,19 @@ def generate_evolution_graph_from_csv(csv_path="logs/evolution.csv", metric="f1"
     plt.close()
     print(f"[LOG] 進化グラフを保存: {output_file}")
 # === /再学習サマリ・進化ログ ここまで ==========================================
+
+
+def evaluate_prediction_accuracy_with_bonus_compat(*args, **kwargs):
+    predictions_file = kwargs.pop("prediction_file", None) or kwargs.pop("predictions_file", None)
+    results_file = kwargs.pop("results_file", None) or "loto7.csv"
+    try:
+        if args:
+            return evaluate_prediction_accuracy_with_bonus(*args, **kwargs)
+    except TypeError:
+        pass
+    if predictions_file is None:
+        predictions_file = "loto7_predictions.csv"
+    try:
+        return evaluate_prediction_accuracy_with_bonus(predictions_file=predictions_file, results_file=results_file)
+    except TypeError:
+        return evaluate_prediction_accuracy_with_bonus(predictions_file, results_file)

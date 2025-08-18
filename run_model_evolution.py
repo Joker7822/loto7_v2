@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 
 from lottery_prediction import (
+    evaluate_prediction_accuracy_with_bonus_compat,
     git_commit_and_push,
     bulk_predict_all_past_draws,
     evaluate_prediction_accuracy_with_bonus,
@@ -32,7 +33,7 @@ def main():
 
     # === ステップ 3: 予測の的中評価 ===
     print("[STEP 3] 予測の評価を実行（本数字＋ボーナス）")
-    accuracy_df = evaluate_prediction_accuracy_with_bonus(
+    accuracy_df = evaluate_prediction_accuracy_with_bonus_compat(
         prediction_file="loto7_predictions.csv",
         output_csv="loto7_prediction_evaluation_with_bonus.csv",
         output_txt="loto7_evaluation_summary.txt"
@@ -45,7 +46,8 @@ def main():
     if os.path.exists(src_csv):
         df = pd.read_csv(src_csv, encoding="utf-8-sig")
         df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors="coerce")
-        X, _, _ = preprocess_data(df)
+        res = preprocess_data(df)
+        X = res[0] if isinstance(res, tuple) and len(res)==3 else None
         input_size = X.shape[1] if X is not None and X.size > 0 else 10
         data_max_date = df["抽せん日"].max()
     else:
