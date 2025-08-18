@@ -335,15 +335,65 @@ def create_advanced_features(dataframe):
 
     return pd.concat([dataframe, features], axis=1)
 
-def preprocess_data(data):
-    """データの前処理: 特徴量の作成 & スケーリング"""
-    
-    # 特徴量作成
-    processed_data = create_advanced_features(data)
 
-    if processed_data.empty:
-        print("エラー: 特徴量生成後のデータが空です。データのフォーマットを確認してください。")
-        return None, None, None
+def preprocess_data(data):
+    """データの前処理: 特徴量の作成 & スケーリング
+    常に (X, y, scaler) の3要素タプルを返す。失敗時や空データ時は (None, None, None)。
+    """
+    try:
+        # 1) 特徴量作成
+        processed_data = create_advanced_features(data)
+        if processed_data is None or getattr(processed_data, "empty", True):
+            print("エラー: 特徴量生成後のデータが空です。データのフォーマットを確認してください。")
+            return (None, None, None)
+
+        # 2) 数値特徴量のみ抽出
+        numeric_features = processed_data.select_dtypes(include=[np.number]).columns
+        X = processed_data[numeric_features].fillna(0)
+        if X is None or X.empty:
+            print("エラー: 数値特徴量が作成されず、データが空になっています。")
+            return (None, None, None)
+
+        # 3) スケーリング
+        from sklearn.preprocessing import MinMaxScaler
+        scaler = MinMaxScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        # 4) 目標変数 y の準備
+        y = None
+        # 本数字が存在し、配列/リストで格納されている場合は 1-37 のワンホットにする
+        if '本数字' in processed_data.columns:
+            try:
+                max_n = 37  # 既存コードの前提に合わせる
+                def to_one_hot(seq):
+                    vec = np.zeros(max_n, dtype=np.float32)
+                    if seq is None:
+                        return vec
+                    for n in seq:
+                        if isinstance(n, (int, float)) and 1 <= int(n) <= max_n:
+                            vec[int(n)-1] = 1.0
+                    return vec
+                y = np.vstack([to_one_hot(v) for v in processed_data['本数字']])
+            except Exception as e:
+                print(f"警告: y の作成に失敗しました: {e}")
+                y = None
+
+        return (X_scaled, y, scaler)
+    except Exception as e:
+        print(f"preprocess_data で予期せぬ例外: {e}")
+        return (None, None, None)
+
+def _preprocess_data_safe(df):
+    \"\"\"Always return a 3-tuple (X, y, scaler); on failure, (None, None, None).\"\"\"
+    try:
+        res = preprocess_data(df)
+        if isinstance(res, tuple) and len(res) == 3:
+            return res
+        return (None, None, None)
+    except Exception as e:
+        print(f\"_preprocess_data_safe failed: {e}\")
+        return (None, None, None)
+
 
 def _preprocess_data_safe(df):
     """Always return a 3-tuple (X, y, scaler); on failure, (None, None, None)."""
