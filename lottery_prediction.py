@@ -999,7 +999,7 @@ class LotoPredictor:
             model.fit(Xi, yi)
             self.meta_models[i] = (model, keys)
         print(f"[STACK] メタモデル学習完了 (#base={len(keys)}) → keys={keys}")
-     None, None
+        None, None
 
         print(f"[DEBUG] 予測用データの shape: {X.shape}")
 
@@ -1053,10 +1053,10 @@ class LotoPredictor:
                 except Exception: pass
                 final_predictions = stacking_predict_block(self, X, base_dict)
         
-                    numbers = np.round(pred).astype(int)
-                    numbers = np.clip(numbers, 1, 37)
-                    numbers = np.sort(numbers)
-                    append_prediction(numbers, base_confidence=1.0)
+                numbers = np.round(pred).astype(int)
+                numbers = np.clip(numbers, 1, 37)
+                numbers = np.sort(numbers)
+                append_prediction(numbers, base_confidence=1.0)
 
             if self.gan_model:
                 for i in range(num_candidates):
