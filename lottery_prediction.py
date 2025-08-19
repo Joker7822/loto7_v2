@@ -336,14 +336,40 @@ def create_advanced_features(dataframe):
     return pd.concat([dataframe, features], axis=1)
 
 def preprocess_data(data):
-    """データの前処理: 特徴量の作成 & スケーリング"""
-    
-    # 特徴量作成
-    processed_data = create_advanced_features(data)
+    """データの前処理: 特徴量の作成 & スケーリング
+    常に (X, y, scaler) を返す。失敗時は (None, None, None)。
+    """
+    # 1) 特徴量生成
+    processed = create_advanced_features(data)
 
-    if processed_data.empty:
+    # 2) ガード
+    if processed is None or processed.empty:
         print("エラー: 特徴量生成後のデータが空です。データのフォーマットを確認してください。")
-        return None, None, None
+        return (None, None, None)
+
+    # 3) 目的変数 y（長さ7の整数ベクトル）
+    #    create_advanced_features内で '本数字' は常に7個の整数リストに正規化される前提
+    try:
+        y = np.vstack(processed['本数字'].values).astype(float)  # shape = (N, 7)
+    except Exception as e:
+        print(f"y 作成に失敗: {e}")
+        return (None, None, None)
+
+    # 4) 説明変数 X（数値列のみを採用、yに使う列は除外）
+    drop_cols = {'本数字', 'ボーナス数字', '抽せん日'}
+    numeric_cols = [c for c in processed.columns
+                    if c not in drop_cols and pd.api.types.is_numeric_dtype(processed[c])]
+    if not numeric_cols:
+        print("エラー: 学習に使える数値特徴量が見つかりません。")
+        return (None, None, None)
+
+    X_raw = processed[numeric_cols].to_numpy(dtype=float)
+
+    # 5) スケーリング
+    scaler = MinMaxScaler()
+    X = scaler.fit_transform(X_raw)
+
+    return (X, y, scaler)
 
 def _preprocess_data_safe(df):
     """Always return a 3-tuple (X, y, scaler); on failure, (None, None, None)."""
