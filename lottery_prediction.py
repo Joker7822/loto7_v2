@@ -46,7 +46,7 @@ from sklearn.decomposition import PCA
 from sklearn.ensemble import StackingRegressor
 from statsmodels.tsa.arima.model import ARIMA
 from stable_baselines3 import PPO
-from gym import spaces
+from gymnasium import spaces
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -60,7 +60,7 @@ import asyncio
 import warnings
 import re
 import platform
-import gym
+import gymnasium as gym
 import sys
 import os
 import random
@@ -77,7 +77,7 @@ import shutil
 import traceback
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import tensorflow as tf
-from gym.utils import seeding
+from gymnasium.utils import seeding
 import time
 import subprocess
 
@@ -1945,3 +1945,27 @@ def generate_evolution_graph_from_csv(csv_path="logs/evolution.csv", metric="f1"
     plt.close()
     print(f"[LOG] 進化グラフを保存: {output_file}")
 # === /再学習サマリ・進化ログ ここまで ==========================================
+
+def evaluate_prediction_accuracy_with_bonus_compat(*args, **kwargs):
+    """Compatibility shim.
+    Older code may call this function with various parameters like:
+      - evaluate_prediction_accuracy_with_bonus_compat(prediction_file=..., output_csv=..., output_txt=...)
+      - evaluate_prediction_accuracy_with_bonus_compat(predictions_file=..., results_file=...)
+      - evaluate_prediction_accuracy_with_bonus_compat(pred_file, res_file)
+    This wrapper maps to evaluate_prediction_accuracy_with_bonus(predictions_file, results_file).
+    Any extra arguments are ignored.
+    """
+    # Try to extract the two essential file paths from kwargs or positional args.
+    predictions_file = kwargs.get("prediction_file") or kwargs.get("predictions_file")
+    results_file = kwargs.get("results_file") or kwargs.get("result_file")
+    # Fallback to positional args
+    if predictions_file is None and len(args) >= 1:
+        predictions_file = args[0]
+    if results_file is None and len(args) >= 2:
+        results_file = args[1]
+    # Final fallback: common defaults
+    if predictions_file is None:
+        predictions_file = "loto7_predictions.csv"
+    if results_file is None:
+        results_file = "loto7.csv"
+    return evaluate_prediction_accuracy_with_bonus(predictions_file, results_file)
