@@ -336,40 +336,52 @@ def create_advanced_features(dataframe):
     return pd.concat([dataframe, features], axis=1)
 
 def preprocess_data(data):
-    """データの前処理: 特徴量の作成 & スケーリング
+    """
+    データの前処理: 特徴量の作成 & スケーリング
     常に (X, y, scaler) を返す。失敗時は (None, None, None)。
     """
-    # 1) 特徴量生成
-    processed = create_advanced_features(data)
-
-    # 2) ガード
-    if processed is None or processed.empty:
-        print("エラー: 特徴量生成後のデータが空です。データのフォーマットを確認してください。")
-        return (None, None, None)
-
-    # 3) 目的変数 y（長さ7の整数ベクトル）
-    #    create_advanced_features内で '本数字' は常に7個の整数リストに正規化される前提
+    import numpy as np
+    import pandas as pd
+    from sklearn.preprocessing import MinMaxScaler
+    # 1) 特徴量作成
     try:
-        y = np.vstack(processed['本数字'].values).astype(float)  # shape = (N, 7)
+        processed_data = create_advanced_features(data)
     except Exception as e:
-        print(f"y 作成に失敗: {e}")
-        return (None, None, None)
-
-    # 4) 説明変数 X（数値列のみを採用、yに使う列は除外）
-    drop_cols = {'本数字', 'ボーナス数字', '抽せん日'}
-    numeric_cols = [c for c in processed.columns
-                    if c not in drop_cols and pd.api.types.is_numeric_dtype(processed[c])]
+        print(f"特徴量作成に失敗: {e}")
+        return None, None, None
+    if processed_data is None:
+        print("エラー: 特徴量生成が None を返しました。")
+        return None, None, None
+    if not hasattr(processed_data, "empty") or processed_data.empty:
+        print("エラー: 特徴量生成後のデータが空です。データのフォーマットを確認してください。")
+        return None, None, None
+    # 2) y
+    if "本数字" not in processed_data.columns:
+        print("エラー: '本数字' 列が見つかりません。create_advanced_features の出力を確認してください。")
+        return None, None, None
+    try:
+        y = np.vstack(processed_data["本数字"].values).astype(float)
+        if y.shape[1] != 7:
+            print(f"エラー: '本数字' の次元が想定外です（shape={y.shape}）。")
+            return None, None, None
+    except Exception as e:
+        print(f"目的変数 y の作成に失敗: {e}")
+        return None, None, None
+    # 3) X 数値列のみ、除外列を外す
+    drop_cols = {"本数字", "ボーナス数字", "抽せん日"}
+    numeric_cols = [c for c in processed_data.columns if c not in drop_cols and pd.api.types.is_numeric_dtype(processed_data[c])]
     if not numeric_cols:
         print("エラー: 学習に使える数値特徴量が見つかりません。")
-        return (None, None, None)
-
-    X_raw = processed[numeric_cols].to_numpy(dtype=float)
-
-    # 5) スケーリング
-    scaler = MinMaxScaler()
-    X = scaler.fit_transform(X_raw)
-
-    return (X, y, scaler)
+        return None, None, None
+    X_raw = processed_data[numeric_cols].to_numpy(dtype=float)
+    # 4) スケーリング
+    try:
+        scaler = MinMaxScaler()
+        X = scaler.fit_transform(X_raw)
+    except Exception as e:
+        print(f"スケーリングに失敗: {e}")
+        return None, None, None
+    return X, y, scaler
 
 def _preprocess_data_safe(df):
     """Always return a 3-tuple (X, y, scaler); on failure, (None, None, None)."""
@@ -928,7 +940,7 @@ class LotoPredictor:
 
     def predict(self, latest_data, num_candidates=50):
         print(f"[INFO] 予測を開始（候補数: {num_candidates}）")
-        X, _, _ = preprocess_data(latest_data)
+        X, _, _ = _preprocess_data_safe(latest_data)
 
         if X is None or len(X) == 0:
             print("[ERROR] 予測用データが空です")
@@ -1007,164 +1019,9 @@ class LotoPredictor:
             model.fit(Xi, yi)
             self.meta_models[i] = (model, keys)
         print(f"[STACK] メタモデル学習完了 (#base={len(keys)}) → keys={keys}")
-        print(f"[DEBUG] 予測用データの shape: {X.shape}")
+        # メタモデルの準備完了
+        return
 
-        freq_score = calculate_number_frequencies(latest_data)
-        cycle_score = calculate_number_cycle_score(latest_data)
-        all_predictions = []
-
-        def append_prediction(numbers, base_confidence=0.8):
-            numbers = [int(n) for n in numbers]  # ← 安全キャスト
-            score = sum(freq_score.get(n, 0) for n in numbers) - sum(cycle_score.get(n, 0) for n in numbers)
-            confidence = base_confidence + (score / 500.0)
-            all_predictions.append((numbers, confidence))
-
-        try:
-            X_df = pd.DataFrame(X)
-
-            if self.feature_names:
-                for name in self.feature_names:
-                    if name not in X_df.columns:
-                        X_df[name] = 0.0
-                X_df = X_df[self.feature_names]
-                X = X_df.values
-            else:
-                print("[WARNING] self.feature_names が未定義です")
-
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-            for i in range(num_candidates):
-                set_global_seed(100 + i)
-
-                ml_predictions = np.array([
-                    self.regression_models[j].predict(X_df) for j in range(7)
-                ]).T
-
-                self.lstm_model.to(device)
-                self.lstm_model.eval()
-                X_tensor = torch.tensor(X.reshape(-1, 1, X.shape[1]), dtype=torch.float32).to(device)
-                with torch.no_grad():
-                    lstm_predictions = self.lstm_model(X_tensor).detach().cpu().numpy()
-
-                
-                base_dict = {"ag": ml_predictions, "lstm": lstm_predictions}
-                try:
-                    base_dict["st"] = st_predictions
-                except Exception: pass
-                try:
-                    base_dict["tabnet"] = tabnet_preds
-                except Exception: pass
-                try:
-                    base_dict["bnn"] = bnn_preds
-                except Exception: pass
-                final_predictions = stacking_predict_block(self, X, base_dict)
-                for pred in final_predictions:
-                    numbers = np.round(pred).astype(int)
-                numbers = np.clip(numbers, 1, 37)
-                numbers = np.sort(numbers)
-                append_prediction(numbers, base_confidence=1.0)
-
-            if self.gan_model:
-                for i in range(num_candidates):
-                    set_global_seed(int(time.time() * 1000) % 100000 + i)  # 毎回異なるシード
-                    gan_sample = self.gan_model.generate_samples(1)[0]
-                
-                    # ★ 数字にランダム性を追加（例：温度スケーリング）
-                    logits = gan_sample / 0.7  # "温度" を下げるとシャープに、高くすると多様に
-                    probs = logits / logits.sum()
-                    numbers = np.random.choice(37, 7, replace=False, p=probs)
-                    
-                    append_prediction(np.sort(numbers + 1), base_confidence=0.8)
-
-            if self.ppo_model:
-                for i in range(num_candidates):
-                    set_global_seed(random.randint(1000, 999999))  # 🔁 シードを毎回変更
-                    obs = np.zeros(37, dtype=np.float32)
-                
-                    # 多様性確保のため deterministic=False に変更
-                    action, _ = self.ppo_model.predict(obs, deterministic=False)
-                
-                    numbers = np.argsort(action)[-7:] + 1
-                    append_prediction(np.sort(numbers), base_confidence=0.85)
-
-            if self.diffusion_model:
-                from diffusion_module import sample_diffusion_ddpm
-                print("[INFO] Diffusion モデルによる生成を開始")
-            
-                for i in range(num_candidates):
-                    set_global_seed(random.randint(1000, 999999))  # 🔁 乱数シードを毎回変える
-            
-                    try:
-                        sample = sample_diffusion_ddpm(
-                            self.diffusion_model,
-                            self.diffusion_betas,
-                            self.diffusion_alphas_cumprod,
-                            dim=37,
-                            num_samples=1  # ★ 1件ずつ生成して多様性を確保
-                        )[0]
-            
-                        numbers = np.argsort(sample)[-7:] + 1
-                        numbers = np.sort(numbers)
-                        append_prediction(numbers, base_confidence=0.84)
-            
-                    except Exception as e:
-                        print(f"[WARNING] Diffusion 生成中にエラー: {e}")
-
-            if self.gnn_model:
-                from gnn_core import build_cooccurrence_graph
-                print("[INFO] GNN推論を開始")
-                graph_data = build_cooccurrence_graph(latest_data)
-                self.gnn_model.eval()
-                with torch.no_grad():
-                    gnn_scores = self.gnn_model(graph_data.x, graph_data.edge_index).squeeze().numpy()
-                    for i in range(num_candidates):
-                        set_global_seed(400 + i)
-                        numbers = np.argsort(gnn_scores)[-7:] + 1
-                        append_prediction(sorted([int(n) for sub in numbers for n in (sub if isinstance(sub, (list, np.ndarray)) else [sub])]), base_confidence=0.83)
-
-            if self.bnn_model:
-                from bnn_module import predict_bayesian_regression
-                print("[INFO] BNNモデルによる予測を実行中")
-            
-                for i in range(num_candidates):
-                    set_global_seed(random.randint(1000, 999999))  # 🔁 毎回異なるシードで予測
-            
-                    try:
-                        bnn_preds = predict_bayesian_regression(
-                            self.bnn_model,
-                            self.bnn_guide,
-                            X,
-                            samples=1  # 🔁 1サンプルずつ個別生成
-                        )
-            
-                        for pred in bnn_preds:
-                            pred = np.array(pred).flatten()
-                            numbers = np.round(pred).astype(int)
-                            numbers = np.clip(numbers, 1, 37)
-                            numbers = np.unique(numbers)
-            
-                            # 必要なら不足分をランダム補完（BNNは被りが出やすいため）
-                            while len(numbers) < 7:
-                                add = random.randint(1, 37)
-                                if add not in numbers:
-                                    numbers = np.append(numbers, add)
-            
-                            numbers = np.sort(numbers[:7])  # 念のため7個制限
-                            append_prediction(numbers, base_confidence=0.83)
-            
-                    except Exception as e:
-                        print(f"[WARNING] BNN予測中にエラー発生: {e}")
-
-            print(f"[INFO] 総予測候補数（全モデル統合）: {len(all_predictions)}件")
-            numbers_only = [pred[0] for pred in all_predictions]
-            confidence_scores = [pred[1] for pred in all_predictions]
-            return numbers_only, confidence_scores
-
-        except Exception as e:
-            print(f"[ERROR] 予測中にエラー発生: {e}")
-            traceback.print_exc()
-            return None, None
-        
 def evaluate_predictions(predictions, actual_numbers):
     matches = []
     for pred in predictions:
@@ -1428,7 +1285,7 @@ def main_with_improved_predictions():
     if accuracy_results is not None and not accuracy_results.empty:
         print("過去の予測精度を評価しました。")
 
-    X, _, _ = preprocess_data(data)
+    X, _, _ = _preprocess_data_safe(data)
     input_size = X.shape[1] if X is not None else 10
     hidden_size = 128
     output_size = 7
@@ -1829,7 +1686,7 @@ def bulk_predict_all_past_draws():
         train_data = df.iloc[:i].copy()
         latest_data = df.iloc[i-10:i].copy()
 
-        X, _, _ = preprocess_data(train_data)
+        X, _, _ = _preprocess_data_safe(train_data)
         if X is None:
             print(f"[WARNING] {test_date_str} の学習データが無効です")
             continue
@@ -1869,7 +1726,7 @@ def bulk_predict_all_past_draws():
             latest_data = df.tail(10).copy()
             train_data = df.copy()
 
-            X, _, _ = preprocess_data(train_data)
+            X, _, _ = _preprocess_data_safe(train_data)
             if X is None:
                 print("[WARNING] 未来予測用の学習データが無効です")
             else:
