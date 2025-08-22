@@ -87,6 +87,17 @@ if platform.system() == "Windows":
 
 warnings.filterwarnings("ignore")
 
+# === ガチ予測デコーダ（周辺化 + ILP/ビーム探索） ===
+try:
+    from gachi_decoder import (
+        build_marginals_from_sets,
+        compute_pair_pmi,
+        decode_topK_sets,
+    )
+    _HAS_GACHI = True
+except Exception as _e:
+    print("[WARN] gachi_decoder の読み込みに失敗しました:", _e)
+    _HAS_GACHI = False
 
 def _save_all_models_no_self(predictor, model_dir):
     os.makedirs(model_dir, exist_ok=True)
@@ -1117,7 +1128,50 @@ class LotoPredictor:
             print(f"[ERROR] 予測中にエラー発生: {e}")
             traceback.print_exc()
             return numbers_only, confidence_scores
-        
+        # === 🆕 ガチ予測: 7個当たりを目指す最適化デコーダ ===
+    def predict_gachi(self, latest_data, k_sets=10, alpha_pair=0.3):
+        """
+        1) 既存predictで多数候補を生成 →
+        2) 候補から周辺確率を推定 →
+        3) ILP/ビーム探索で目的関数最大となるセットを上位k件返す
+        """
+        base = self.predict(latest_data, num_candidates=200)
+        if base is None or base[0] is None:
+            return None, None
+        candidates, conf = base
+
+        # 周辺確率
+        extra_logits = []
+        try:
+            from gnn_core import build_cooccurrence_graph
+            graph_data = build_cooccurrence_graph(latest_data)
+            if hasattr(self, "gnn_model") and self.gnn_model is not None:
+                self.gnn_model.eval()
+                with torch.no_grad():
+                    gnn_scores = self.gnn_model(graph_data.x, graph_data.edge_index).squeeze().cpu().numpy()
+                extra_logits.append(gnn_scores)
+        except Exception as _e:
+            print("[INFO] GNNログitの取得をスキップ:", _e)
+
+        p = build_marginals_from_sets(candidates, conf, extra_logits=extra_logits)
+
+        # ペアPMI（履歴から）
+        try:
+            hist = latest_data.copy()
+            pair_pmi = compute_pair_pmi(hist)
+        except Exception as _e:
+            print("[INFO] PMI計算をスキップ:", _e)
+            pair_pmi = None
+
+        top = decode_topK_sets(p, pair_pmi, K=k_sets, alpha_pair=alpha_pair)
+        if not top:
+            return candidates[:k_sets], conf[:k_sets]
+
+        decoded, scores = zip(*top)
+        s = np.array(scores, dtype=float)
+        s = (s - s.min()) / (s.max() - s.min() + 1e-9)
+        return list(decoded), list(s)
+
 def evaluate_predictions(predictions, actual_numbers):
     matches = []
     for pred in predictions:
