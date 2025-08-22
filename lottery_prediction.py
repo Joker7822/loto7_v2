@@ -46,7 +46,7 @@ from sklearn.decomposition import PCA
 from sklearn.ensemble import StackingRegressor
 from statsmodels.tsa.arima.model import ARIMA
 from stable_baselines3 import PPO
-from gymnasium import spaces
+from gym import spaces
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -60,7 +60,7 @@ import asyncio
 import warnings
 import re
 import platform
-import gymnasium as gym
+import gym
 import sys
 import os
 import random
@@ -77,7 +77,7 @@ import shutil
 import traceback
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import tensorflow as tf
-from gymnasium.utils import seeding
+from gym.utils import seeding
 import time
 import subprocess
 
@@ -88,93 +88,16 @@ if platform.system() == "Windows":
 warnings.filterwarnings("ignore")
 
 
-def _save_all_models_no_self(predictor, model_dir):
-    os.makedirs(model_dir, exist_ok=True)
+def _clean_dir(directory):
+    """ディレクトリを空にする（存在すれば削除→再作成）"""
     try:
-        def _save(path, save_fn):
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            save_fn(path)
-            print(f"[INFO] 保存完了: {path}")
-
-        # LSTM ONNX (if produced externally)
-        if os.path.exists("lstm_model.onnx"):
-            dst = os.path.join(model_dir, "lstm_model.onnx")
-            shutil.copyfile("lstm_model.onnx", dst)
-            print(f"[INFO] 保存完了: {dst}")
-
-        # GAN
-        try:
-            g = getattr(predictor, "gan_model", None)
-            if g is not None:
-                _save(os.path.join(model_dir, "gan_model.pth"), lambda p: torch.save(g.state_dict(), p))
-        except Exception as e:
-            print("[WARN] GAN保存失敗:", e)
-
-        # PPO
-        try:
-            ppo = getattr(predictor, "ppo_model", None)
-            if ppo is not None:
-                out = os.path.join(model_dir, "ppo_model.zip")
-                ppo.save(out)
-                print(f"[INFO] 保存完了: {out}")
-        except Exception as e:
-            print("[WARN] PPO保存失敗:", e)
-
-        # Diffusion
-        try:
-            dm = getattr(predictor, "diffusion_model", None)
-            if dm is not None:
-                _save(os.path.join(model_dir, "diffusion_model.pth"), lambda p: torch.save(dm.state_dict(), p))
-        except Exception as e:
-            print("[WARN] Diffusion保存失敗:", e)
-
-        # GNN
-        try:
-            gnn = getattr(predictor, "gnn_model", None)
-            if gnn is not None:
-                _save(os.path.join(model_dir, "gnn_model.pth"), lambda p: torch.save(gnn.state_dict(), p))
-        except Exception as e:
-            print("[WARN] GNN保存失敗:", e)
-
-        # TabNet
-        try:
-            tabnet = getattr(predictor, "tabnet_model", None)
-            if tabnet is not None:
-                from tabnet_module import save_tabnet_model
-                save_tabnet_model(tabnet, os.path.join(model_dir, "tabnet_model"))
-                print("[INFO] 保存完了: TabNet")
-        except Exception as e:
-            print("[WARN] TabNet保存失敗:", e)
-
-        # BNN
-        try:
-            bnn = getattr(predictor, "bnn_model", None)
-            bnn_guide = getattr(predictor, "bnn_guide", None)
-            if bnn is not None and bnn_guide is not None:
-                from bnn_module import save_bayesian_model
-                save_bayesian_model(bnn, bnn_guide, os.path.join(model_dir, "bnn_model"))
-                print("[INFO] 保存完了: BNN")
-        except Exception as e:
-            print("[WARN] BNN保存失敗:", e)
-
-        # AutoGluon per position
-        try:
-            for j in range(7):
-                model_path = f"autogluon_model_pos{j}"
-                dest = os.path.join(model_dir, f"autogluon_model_pos{j}")
-                if os.path.isdir(model_path):
-                    if os.path.isdir(dest):
-                        shutil.rmtree(dest)
-                    shutil.copytree(model_path, dest)
-            print("[INFO] 保存完了: AutoGluon")
-        except Exception as e:
-            print("[WARN] AutoGluon保存失敗:", e)
-
-        print(f"[INFO] モデルを保存しました → {model_dir}")
-        git_commit_and_push(model_dir, "Save trained models")
+        if os.path.exists(directory):
+            shutil.rmtree(directory)
     except Exception as e:
-        print(f"[WARNING] モデル保存中にエラー発生: {e}")
-        traceback.print_exc()
+        print(f"[WARN] 旧モデル削除に失敗: {directory}: {e}")
+    os.makedirs(directory, exist_ok=True)
+
+
 
 def set_global_seed(seed=42):
 
@@ -489,7 +412,7 @@ class LotoLSTM(nn.Module):
         out = self.fc(context)
         return out
 
-def train_lstm_model(X_train, y_train, input_size, device):
+def train_lstm_model(X_train, y_train, input_size, device, save_path=None):
     
     torch.backends.cudnn.benchmark = True  # ★これを追加
     
@@ -525,7 +448,7 @@ def train_lstm_model(X_train, y_train, input_size, device):
     torch.onnx.export(
         model,
         dummy_input,
-        "lstm_model.onnx",
+        save_path if save_path else "lstm_model.onnx",
         input_names=["input"],
         output_names=["output"],
         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
@@ -664,7 +587,10 @@ class LotoPredictor:
         output = self.onnx_session.run(None, {input_name: X.astype(np.float32)})
         return output[0]
 
-    def train_model(self, data, accuracy_results=None, model_dir="models/tmp"):
+    def train_model(self, data, accuracy_results=None, model_dir="models/latest"):
+        self.model_dir = model_dir
+        _clean_dir(self.model_dir)
+        os.makedirs(self.model_dir, exist_ok=True)
         os.makedirs(model_dir, exist_ok=True)
         set_global_seed(42)
         print("[INFO] データ前処理を開始")
@@ -716,10 +642,10 @@ class LotoPredictor:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         X_train_tensor = torch.tensor(X_train.reshape(-1, 1, input_size), dtype=torch.float32).to(device)
         y_train_tensor = torch.tensor(y_train, dtype=torch.float32).to(device)
-        self.lstm_model = train_lstm_model(X_train_tensor, y_train_tensor, input_size, device=device)
+        self.lstm_model = train_lstm_model(X_train_tensor, y_train_tensor, input_size, device=device, save_path=os.path.join(self.model_dir, "lstm_model.onnx"))
 
         dummy_input = torch.randn(1, 1, input_size)
-        lstm_path = os.path.join(model_dir, "lstm_model.onnx")
+        lstm_path = os.path.join(self.model_dir, "lstm_model.onnx")
         torch.onnx.export(self.lstm_model, dummy_input, lstm_path,
                         input_names=["input"], output_names=["output"],
                         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
@@ -733,7 +659,7 @@ class LotoPredictor:
         from diffusion_module import train_diffusion_ddpm
         real_data_bin = convert_numbers_to_binary_vectors(data)
         self.diffusion_model, self.diffusion_betas, self.diffusion_alphas_cumprod = train_diffusion_ddpm(real_data_bin)
-        torch.save(self.diffusion_model.state_dict(), os.path.join(model_dir, "diffusion_model.pth"))
+        torch.save(self.diffusion_model.state_dict(), os.path.join(self.model_dir, "diffusion_model.pth"))
 
         print("[INFO] GNNモデルを訓練中")
         from gnn_core import LotoGNN, build_cooccurrence_graph
@@ -749,23 +675,26 @@ class LotoPredictor:
             optimizer.zero_grad()
             if epoch % 50 == 0:
                 print(f"[GNN] Epoch {epoch} Loss: {loss.item():.4f}")
-        torch.save(self.gnn_model.state_dict(), os.path.join(model_dir, "gnn_model.pth"))
+        torch.save(self.gnn_model.state_dict(), os.path.join(self.model_dir, "gnn_model.pth"))
 
         print("[INFO] TabNet モデルを訓練中")
         from tabnet_module import train_tabnet, save_tabnet_model
         self.tabnet_model = train_tabnet(X_train, y_train)
-        save_tabnet_model(self.tabnet_model, os.path.join(model_dir, "tabnet_model"))
+        _clean_dir(os.path.join(self.model_dir, "tabnet_model"))
+        save_tabnet_model(self.tabnet_model, os.path.join(self.model_dir, "tabnet_model"))
 
         print("[INFO] BNN モデルを訓練中")
         from bnn_module import train_bayesian_regression, save_bayesian_model
         self.bnn_model, self.bnn_guide = train_bayesian_regression(X_train, y_train, input_size)
-        save_bayesian_model(self.bnn_model, self.bnn_guide, os.path.join(model_dir, "bnn_model"))
+        _clean_dir(os.path.join(self.model_dir, "bnn_model"))
+        save_bayesian_model(self.bnn_model, self.bnn_guide, os.path.join(self.model_dir, "bnn_model"))
 
         print("[INFO] AutoGluon モデルを訓練中")
         for i in range(7):
             df_train = pd.DataFrame(X_train)
             df_train['target'] = y_train[:, i]
-            ag_path = os.path.join(model_dir, f"autogluon_model_pos{i}")
+            ag_path = os.path.join(self.model_dir, f"autogluon_model_pos{i}")
+            _clean_dir(ag_path)
             predictor = TabularPredictor(label='target', path=ag_path, verbosity=0).fit(
                 df_train,
                 excluded_model_types=['KNN', 'NN_TORCH'],
@@ -811,7 +740,7 @@ class LotoPredictor:
             if (epoch + 1) % 500 == 0:
                 print(f"[GAN] Epoch {epoch+1} D: {d_loss.item():.4f} G: {g_loss.item():.4f}")
         self.gan_model = gan
-        torch.save(self.gan_model.state_dict(), os.path.join(model_dir, "gan_model.pth"))
+        torch.save(self.gan_model.state_dict(), os.path.join(self.model_dir, "gan_model.pth"))
 
         print("[INFO] PPO モデルを訓練中")
         from stable_baselines3 import PPO
@@ -823,20 +752,20 @@ class LotoPredictor:
 
         self.ppo_model = PPO("MlpPolicy", env, seed=42, verbose=0)
         self.ppo_model.learn(total_timesteps=50000)
-        self.ppo_model.save(os.path.join(model_dir, "ppo_model.zip"))
+        self.ppo_model.save(os.path.join(self.model_dir, "ppo_model.zip"))
 
         print("[INFO] 全モデルの訓練と保存が完了しました")
 
     def load_saved_models(self, model_dir):
 
         # LSTM
-        onnx_path = os.path.join(model_dir, "lstm_model.onnx")
+        onnx_path = os.path.join(self.model_dir, "lstm_model.onnx")
         if os.path.exists(onnx_path):
             self.load_onnx_model(onnx_path)
             print("[INFO] LSTM (ONNX) モデルをロードしました")
 
         # GAN
-        gan_path = os.path.join(model_dir, "gan_model.pth")
+        gan_path = os.path.join(self.model_dir, "gan_model.pth")
         if os.path.exists(gan_path):
             from gnn_core import LotoGAN
             self.gan_model = LotoGAN()
@@ -845,13 +774,13 @@ class LotoPredictor:
             print("[INFO] GANモデルをロードしました")
 
         # PPO
-        ppo_path = os.path.join(model_dir, "ppo_model.zip")
+        ppo_path = os.path.join(self.model_dir, "ppo_model.zip")
         if os.path.exists(ppo_path):
             self.ppo_model = PPO.load(ppo_path)
             print("[INFO] PPOモデルをロードしました")
 
         # Diffusion
-        diff_path = os.path.join(model_dir, "diffusion_model.pth")
+        diff_path = os.path.join(self.model_dir, "diffusion_model.pth")
         if os.path.exists(diff_path):
             from diffusion_module import DiffusionModel, get_diffusion_constants
             self.diffusion_model = DiffusionModel()
@@ -861,7 +790,7 @@ class LotoPredictor:
             print("[INFO] Diffusion モデルをロードしました")
 
         # GNN
-        gnn_path = os.path.join(model_dir, "gnn_model.pth")
+        gnn_path = os.path.join(self.model_dir, "gnn_model.pth")
         if os.path.exists(gnn_path):
             from gnn_core import LotoGNN
             self.gnn_model = LotoGNN()
@@ -870,14 +799,14 @@ class LotoPredictor:
             print("[INFO] GNN モデルをロードしました")
 
         # TabNet
-        tabnet_path = os.path.join(model_dir, "tabnet_model")
+        tabnet_path = os.path.join(self.model_dir, "tabnet_model")
         if os.path.exists(tabnet_path):
             from tabnet_module import load_tabnet_model
             self.tabnet_model = load_tabnet_model(tabnet_path)
             print("[INFO] TabNet モデルをロードしました")
 
         # BNN
-        bnn_path = os.path.join(model_dir, "bnn_model")
+        bnn_path = os.path.join(self.model_dir, "bnn_model")
         if os.path.exists(bnn_path):
             from bnn_module import load_bayesian_model
             self.bnn_model, self.bnn_guide = load_bayesian_model(bnn_path)
@@ -885,7 +814,7 @@ class LotoPredictor:
 
         # AutoGluon
         for j in range(7):
-            ag_path = os.path.join(model_dir, f"autogluon_model_pos{j}")
+            ag_path = os.path.join(self.model_dir, f"autogluon_model_pos{j}")
             if os.path.exists(ag_path):
                 from autogluon.tabular import TabularPredictor
                 self.regression_models[j] = TabularPredictor.load(ag_path)
@@ -1049,74 +978,12 @@ class LotoPredictor:
             print(f"[INFO] 総予測候補数（全モデル統合）: {len(all_predictions)}件")
             numbers_only = [pred[0] for pred in all_predictions]
             confidence_scores = [pred[1] for pred in all_predictions]
-
-            # === ここで外だしした関数を呼ぶだけ ===
-            numbers_only = _stable_diverse_selection(
-                numbers_only, confidence_scores, latest_data,
-                k=30, lambda_div=0.6, temperature=0.35
-            )
-            confidence_scores = confidence_scores[:len(numbers_only)]
+            return numbers_only, confidence_scores
 
         except Exception as e:
             print(f"[ERROR] 予測中にエラー発生: {e}")
             traceback.print_exc()
-            return numbers_only, confidence_scores
-            
-        def _stable_diverse_selection(numbers_only, confidence_scores, latest_data,
-                                    k=30, lambda_div=0.6, temperature=0.35):
-            import hashlib, numpy as np, pandas as pd
-            # 1) 安定シード（抽せん日で決定）
-            if isinstance(latest_data, pd.DataFrame) and "抽せん日" in latest_data.columns:
-                td = str(pd.to_datetime(latest_data["抽せん日"].max()).date())
-            else:
-                td = "unknown"
-            seed = int(hashlib.md5(td.encode()).hexdigest()[:8], 16)
-            set_global_seed(seed)
-
-            # 2) マージナル確率
-            conf = np.array(confidence_scores, dtype=float)
-            conf = (conf - conf.min()) / (conf.max() - conf.min() + 1e-9)
-            weights = np.exp(conf / max(1e-6, temperature))
-            weights = weights / (weights.sum() + 1e-9)
-
-            marg = np.zeros(37)
-            for cand, w in zip(numbers_only, weights):
-                for n in cand:
-                    marg[n-1] += w
-            marg = marg / (marg.sum() + 1e-9)
-
-            base_scores = [sum(np.log(marg[n-1] + 1e-9) for n in cand) for cand in numbers_only]
-
-            # 3) Greedy多様化（Jaccardペナルティ）
-            selected, used = [], set()
-            for _ in range(min(k, len(numbers_only))):
-                best_i, best_val = None, -1e12
-                for i, cand in enumerate(numbers_only):
-                    if i in used:
-                        continue
-                    penalty = 0.0
-                    for s in selected:
-                        inter = len(set(cand) & set(s))
-                        union = len(set(cand) | set(s))
-                        penalty += inter / union
-                    val = base_scores[i] - lambda_div * penalty
-                    if val > best_val:
-                        best_val, best_i = val, i
-                used.add(best_i)
-                selected.append(numbers_only[best_i])
-            return selected
-
-        try:
-            numbers_only = _stable_diverse_selection(
-                numbers_only, confidence_scores, latest_data,
-                k=30, lambda_div=0.6, temperature=0.35
-            )
-            confidence_scores = confidence_scores[:len(numbers_only)]
-
-        except Exception as e:
-            print(f"[ERROR] 予測中にエラー発生: {e}")
-            traceback.print_exc()
-            return numbers_only, confidence_scores
+            return None, None
         
 def evaluate_predictions(predictions, actual_numbers):
     matches = []
@@ -1808,7 +1675,42 @@ def bulk_predict_all_past_draws():
         git_commit_and_push("loto7_predictions.csv", "Auto update loto7_predictions.csv [skip ci]")
 
         model_dir = f"models/{test_date_str}"
-        _save_all_models_no_self(predictor, model_dir)
+        os.makedirs(model_dir, exist_ok=True)
+
+        try:
+            def save_if_exists(obj, save_fn, path):
+                if obj:
+                    save_fn(path)
+                    print(f"[INFO] 保存完了: {path}")
+
+            if os.path.exists("lstm_model.onnx"):
+                shutil.copy("lstm_model.onnx", os.path.join(self.model_dir, "lstm_model.onnx"))
+
+            save_if_exists(predictor.gan_model, lambda p: torch.save(predictor.gan_model.state_dict(), p), os.path.join(self.model_dir, "gan_model.pth"))
+            save_if_exists(predictor.ppo_model, lambda p: predictor.ppo_model.save(p), os.path.join(self.model_dir, "ppo_model.zip"))
+            save_if_exists(predictor.diffusion_model, lambda p: torch.save(predictor.diffusion_model.state_dict(), p), os.path.join(self.model_dir, "diffusion_model.pth"))
+            save_if_exists(predictor.gnn_model, lambda p: torch.save(predictor.gnn_model.state_dict(), p), os.path.join(self.model_dir, "gnn_model.pth"))
+
+            if getattr(predictor, "tabnet_model", None):
+                from tabnet_module import save_tabnet_model
+                save_tabnet_model(predictor.tabnet_model, os.path.join(self.model_dir, "tabnet_model"))
+
+            if getattr(predictor, "bnn_model", None):
+                from bnn_module import save_bayesian_model
+                save_bayesian_model(predictor.bnn_model, predictor.bnn_guide, os.path.join(self.model_dir, "bnn_model"))
+
+            for j in range(7):
+                model_path = f"autogluon_model_pos{j}"
+                dest = os.path.join(self.model_dir, f"autogluon_model_pos{j}")
+                if os.path.exists(model_path):
+                    shutil.copytree(model_path, dest, dirs_exist_ok=True)
+
+            print(f"[INFO] モデルを保存しました → {model_dir}")
+            git_commit_and_push(model_dir, f"Save trained models for {test_date_str}")
+
+        except Exception as e:
+            print(f"[WARNING] モデル保存中にエラー発生: {e}")
+            traceback.print_exc()
 
         evaluate_prediction_accuracy_with_bonus("loto7_predictions.csv", "loto7.csv")
 
@@ -2007,27 +1909,3 @@ def generate_evolution_graph_from_csv(csv_path="logs/evolution.csv", metric="f1"
     plt.close()
     print(f"[LOG] 進化グラフを保存: {output_file}")
 # === /再学習サマリ・進化ログ ここまで ==========================================
-
-def evaluate_prediction_accuracy_with_bonus_compat(*args, **kwargs):
-    """Compatibility shim.
-    Older code may call this function with various parameters like:
-      - evaluate_prediction_accuracy_with_bonus_compat(prediction_file=..., output_csv=..., output_txt=...)
-      - evaluate_prediction_accuracy_with_bonus_compat(predictions_file=..., results_file=...)
-      - evaluate_prediction_accuracy_with_bonus_compat(pred_file, res_file)
-    This wrapper maps to evaluate_prediction_accuracy_with_bonus(predictions_file, results_file).
-    Any extra arguments are ignored.
-    """
-    # Try to extract the two essential file paths from kwargs or positional args.
-    predictions_file = kwargs.get("prediction_file") or kwargs.get("predictions_file")
-    results_file = kwargs.get("results_file") or kwargs.get("result_file")
-    # Fallback to positional args
-    if predictions_file is None and len(args) >= 1:
-        predictions_file = args[0]
-    if results_file is None and len(args) >= 2:
-        results_file = args[1]
-    # Final fallback: common defaults
-    if predictions_file is None:
-        predictions_file = "loto7_predictions.csv"
-    if results_file is None:
-        results_file = "loto7.csv"
-    return evaluate_prediction_accuracy_with_bonus(predictions_file, results_file)
