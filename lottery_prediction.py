@@ -1,60 +1,3 @@
-from gachi_solver import GachiSolver
-
-def _gachi_fallback_generate(latest_data: pd.DataFrame, history_df: pd.DataFrame, n_sets: int = 30):
-    """
-    Build synthetic candidate sets from frequency & cycle heuristics,
-    then run GachiSolver to obtain robust main7 (and ignore bonus here).
-    """
-    try:
-        freq = calculate_number_frequencies(history_df if history_df is not None else latest_data) or {}
-        cyc  = calculate_number_cycle_score(history_df if history_df is not None else latest_data) or {}
-        import numpy as _np
-        w = _np.array([float(freq.get(n,0)) + float(cyc.get(n,0)) for n in range(1,38)], dtype=float)
-        if w.sum() <= 0:
-            w = _np.ones(37, dtype=float)
-        w = w / w.sum()
-        # synthesize candidate sets
-        rng = _np.random.RandomState(12345)
-        candidates = []
-        for _ in range(max(n_sets*4, 80)):
-            # sample without replacement by weighted probabilities
-            # use a simple sequential without-replacement sampling
-            probs = w.copy()
-            chosen = []
-            for k in range(7):
-                probs_ = probs.copy()
-                probs_[ _np.array(chosen, dtype=int) - 1] = 0.0 if chosen else probs_
-                probs_ = probs_ / probs_.sum()
-                pick = rng.choice(_np.arange(1,38), p=probs_)
-                chosen.append(int(pick))
-            chosen = sorted(set(chosen))
-            if len(chosen) == 7:
-                candidates.append(chosen)
-        if not candidates:
-            candidates = [sorted(rng.choice(_np.arange(1,38), size=7, replace=False).tolist()) for _ in range(n_sets)]
-        numbers_only = candidates[:max(n_sets, 60)]
-        confidence_scores = [1.0]*len(numbers_only)
-        solver = GachiSolver()
-        elite = solver.propose_from_marginals(
-            numbers_only=numbers_only,
-            confidence_scores=confidence_scores,
-            latest_data=latest_data,
-            history_df=history_df,
-            n_elite=n_sets,
-            seed=42
-        )
-        if elite:
-            preds = [e[0] for e in elite]
-            confs = [1.05 + float(e[1]) for e in elite]
-            return preds, confs
-    except Exception as _e:
-        print("[WARN] Gachi fallback failed:", _e)
-    # final naive fallback
-    import numpy as _np
-    rng = _np.random.RandomState(777)
-    preds = [sorted(rng.choice(_np.arange(1,38), size=7, replace=False).tolist()) for _ in range(n_sets)]
-    return preds, [0.8]*n_sets
-
 
 # === Optunaで最適化されたパラメータの読み込み ===
 import os
@@ -1462,17 +1405,6 @@ def main_with_improved_predictions():
                 history_data = data[data["抽せん日"] < target_date]  # 🔥 未来リーク防止
 
                 predictions, confidence_scores = predictor.predict(latest_data)
-            
-        if predictions is None or (isinstance(predictions, (list, tuple)) and len(predictions)==0):
-            print('[WARN] 空予測。Gachiフォールバックを適用します。')
-            history_data = train_data
-            predictions, confidence_scores = _gachi_fallback_generate(latest_data, history_data, n_sets=20)
-# === Fallback if predictions are empty/None ===
-            if predictions is None or (isinstance(predictions, (list, tuple)) and len(predictions)==0):
-                print("[WARN] 予測が空のため、Gachiフォールバックで候補を生成します。")
-                history_data = data[data["抽せん日"] < target_date] if 'data' in globals() else None
-                predictions, confidence_scores = _gachi_fallback_generate(latest_data, history_data, n_sets=30)
-            
 
                 if predictions is None:
                     print("[ERROR] 予測に失敗したため処理を中断します。")
@@ -1497,12 +1429,6 @@ def main_with_improved_predictions():
             history_data = data[data["抽せん日"] < target_date]  # 🔥 未来リーク防止
 
             predictions, confidence_scores = predictor.predict(latest_data)
-            # === Fallback if predictions are empty/None ===
-            if predictions is None or (isinstance(predictions, (list, tuple)) and len(predictions)==0):
-                print("[WARN] 予測が空のため、Gachiフォールバックで候補を生成します。")
-                history_data = data[data["抽せん日"] < target_date] if 'data' in globals() else None
-                predictions, confidence_scores = _gachi_fallback_generate(latest_data, history_data, n_sets=30)
-            
 
             if predictions is None:
                 print("[ERROR] 予測に失敗したため処理を中断します。")
@@ -1819,7 +1745,7 @@ def calculate_number_cycle_score(dataframe):
     return score
 
         
-def bulk_predict_all_past_draws(force: bool=False):
+def bulk_predict_all_past_draws():
     set_global_seed(42)
     df = pd.read_csv("loto7.csv")
     df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors='coerce')
@@ -1848,7 +1774,7 @@ def bulk_predict_all_past_draws(force: bool=False):
         test_date = df.iloc[i]["抽せん日"]
         test_date_str = test_date.strftime("%Y-%m-%d")
 
-        if (not force) and (test_date_str in skip_dates):
+        if test_date_str in skip_dates:
             print(f"[INFO] 既に予測済み: {test_date_str} → スキップ")
             continue
 
@@ -1872,12 +1798,6 @@ def bulk_predict_all_past_draws(force: bool=False):
             predictor = predictor_cache[input_size]
 
         predictions, confidence_scores = predictor.predict(latest_data)
-            # === Fallback if predictions are empty/None ===
-            if predictions is None or (isinstance(predictions, (list, tuple)) and len(predictions)==0):
-                print("[WARN] 予測が空のため、Gachiフォールバックで候補を生成します。")
-                history_data = data[data["抽せん日"] < target_date] if 'data' in globals() else None
-                predictions, confidence_scores = _gachi_fallback_generate(latest_data, history_data, n_sets=30)
-            
         if predictions is None:
             print(f"[ERROR] {test_date_str} の予測に失敗しました")
             continue
@@ -1915,12 +1835,6 @@ def bulk_predict_all_past_draws(force: bool=False):
                     predictor = predictor_cache[input_size]
 
                 predictions, confidence_scores = predictor.predict(latest_data)
-            # === Fallback if predictions are empty/None ===
-            if predictions is None or (isinstance(predictions, (list, tuple)) and len(predictions)==0):
-                print("[WARN] 予測が空のため、Gachiフォールバックで候補を生成します。")
-                history_data = data[data["抽せん日"] < target_date] if 'data' in globals() else None
-                predictions, confidence_scores = _gachi_fallback_generate(latest_data, history_data, n_sets=30)
-            
                 if predictions is not None:
                     verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), train_data)
                     save_self_predictions(verified_predictions)
@@ -1939,7 +1853,7 @@ def bulk_predict_all_past_draws(force: bool=False):
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.set_start_method('spawn', force=True)
-    bulk_predict_all_past_draws(force=True)
+    bulk_predict_all_past_draws()
 
 
 def log_prediction_summary(evaluation_df, log_path="prediction_accuracy_log.txt"):
