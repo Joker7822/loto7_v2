@@ -6,7 +6,7 @@ on:
       truth_path:
         description: "実績CSVのパス（リポジトリ内）"
         type: string
-        default: "data/loto7.csv"
+        default: "loto7.csv"
       outpred:
         description: "出力する予測CSVのパス"
         type: string
