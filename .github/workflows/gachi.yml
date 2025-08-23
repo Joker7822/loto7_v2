@@ -1,0 +1,109 @@
+name: Loto7 Gachi Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      truth_path:
+        description: "実績CSVのパス（リポジトリ内）"
+        type: string
+        default: "data/loto7.csv"
+      outpred:
+        description: "出力する予測CSVのパス"
+        type: string
+        default: "outputs/loto7_predictions_gachi.csv"
+      summary:
+        description: "評価サマリの出力パス"
+        type: string
+        default: "outputs/loto7_evaluation_summary_gachi.txt"
+      k_sets:
+        description: "ガチ予測のセット数"
+        type: number
+        default: 20
+      alpha_pair:
+        description: "PMI重み α"
+        type: number
+        default: 0.35
+      history:
+        description: "履歴件数（特徴量用）"
+        type: number
+        default: 120
+      draw_date:
+        description: "抽せん日 (YYYY-MM-DD) 指定（省略可）"
+        type: string
+        default: ""
+  schedule:
+    # ※ GitHub Actions の cron は UTC。日本時間(金曜9:00)に走らせたいなら木曜24:00=木曜15:00UTC。
+    - cron: "0 15 * * 4"
+
+jobs:
+  gachi:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            # リポ内に requirements.txt が無い場合の最低限セット
+            pip install numpy pandas scikit-learn matplotlib ortools
+            # PyTorch (CPU版) — 必要なければ削除してください
+            pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision --extra-index-url https://pypi.org/simple
+          fi
+
+      - name: Prepare output dirs
+        run: |
+          mkdir -p outputs
+          mkdir -p data
+
+      - name: List repo (debug)
+        run: ls -R
+
+      - name: Run Gachi end-to-end
+        env:
+          TRUTH: ${{ github.event.inputs.truth_path || 'data/loto7.csv' }}
+          OUTPRED: ${{ github.event.inputs.outpred || 'outputs/loto7_predictions_gachi.csv' }}
+          SUMMARY: ${{ github.event.inputs.summary || 'outputs/loto7_evaluation_summary_gachi.txt' }}
+          KSETS: ${{ github.event.inputs.k_sets || 20 }}
+          ALPHA: ${{ github.event.inputs.alpha_pair || 0.35 }}
+          HISTORY: ${{ github.event.inputs.history || 120 }}
+          DRAW_DATE: ${{ github.event.inputs.draw_date || '' }}
+        run: |
+          set -euo pipefail
+          python run_gachi_full.py \
+            --truth "$TRUTH" \
+            --outpred "$OUTPRED" \
+            --summary "$SUMMARY" \
+            --k "$KSETS" \
+            --alpha "$ALPHA" \
+            --history "$HISTORY" \
+            $( [ -n "$DRAW_DATE" ] && echo --date "$DRAW_DATE" )
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: loto7-gachi-results
+          path: |
+            outputs/*.csv
+            outputs/*.txt
+          if-no-files-found: warn
+          retention-days: 14
