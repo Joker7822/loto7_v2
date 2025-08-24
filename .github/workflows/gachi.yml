@@ -60,24 +60,12 @@ jobs:
       - name: Install core dependencies
         env:
           PIP_DISABLE_PIP_VERSION_CHECK: "1"
-        run: |
-          if [ -f requirements_core.txt ]; then
-            pip install --no-cache-dir -r requirements_core.txt
-          else
-            pip install --no-cache-dir numpy pandas scikit-learn matplotlib requests
-          fi
+        run: pip install --no-cache-dir -r requirements_core.txt
 
       - name: Install heavy dependencies
         env:
           PIP_DISABLE_PIP_VERSION_CHECK: "1"
-        run: |
-          if [ -f requirements_heavy.txt ]; then
-            pip install --no-cache-dir -r requirements_heavy.txt
-          else
-            pip install --no-cache-dir ortools
-            pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision --extra-index-url https://pypi.org/simple
-          fi
-
+        run: pip install --no-cache-dir -r requirements_heavy.txt
       - name: Prepare output dirs
         run: |
           mkdir -p outputs
