@@ -1,17 +1,17 @@
-    import lp_hotfix_monkeypatch
-    import pandas as pd
-    import os
+import lp_hotfix_monkeypatch
+import pandas as pd
+import os
 
-    from extended_predictor import LotoPredictorGachi as LotoPredictor
-    from lottery_prediction import (
-        set_global_seed,
-        preprocess_data,
-        save_self_predictions,
-        save_predictions_to_csv,
-        evaluate_prediction_accuracy_with_bonus,
-        git_commit_and_push,
-        _save_all_models_no_self,
-    )
+from extended_predictor import LotoPredictorGachi as LotoPredictor
+from lottery_prediction import (
+    set_global_seed,
+    preprocess_data,
+    save_self_predictions,
+    save_predictions_to_csv,
+    evaluate_prediction_accuracy_with_bonus,
+    git_commit_and_push,
+    _save_all_models_no_self,
+)
 
     def make_compat_for_evaluator(in_csv="loto7_predictions_gachi.csv",
                                   out_csv="loto7_predictions_for_eval.csv"):
