@@ -940,7 +940,13 @@ class LotoPredictor:
 
     def predict(self, latest_data, num_candidates=50):
         print(f"[INFO] 予測を開始（候補数: {num_candidates}）")
-        X, _, _ = preprocess_data(latest_data)
+        __pre = preprocess_data()
+        if not isinstance(__pre, tuple) or len(__pre) < 1:
+            print("[ERROR] preprocess_data が不正な値を返しました（tuple想定）")
+            X = None
+        else:
+            X = __pre[0]
+
 
         if X is None or len(X) == 0:
             print("[ERROR] 予測用データが空です")
@@ -1384,7 +1390,18 @@ def main_with_improved_predictions():
     if accuracy_results is not None and not accuracy_results.empty:
         print("過去の予測精度を評価しました。")
 
-    X, _, _ = preprocess_data(data)
+    __pre = preprocess_data()
+
+    if not isinstance(__pre, tuple) or len(__pre) < 1:
+
+        print("[ERROR] preprocess_data が不正な値を返しました（tuple想定）")
+
+        X = None
+
+    else:
+
+        X = __pre[0]
+
     input_size = X.shape[1] if X is not None else 10
     hidden_size = 128
     output_size = 7
@@ -1785,7 +1802,18 @@ def bulk_predict_all_past_draws():
         train_data = df.iloc[:i].copy()
         latest_data = df.iloc[i-10:i].copy()
 
-        X, _, _ = preprocess_data(train_data)
+        __pre = preprocess_data()
+
+        if not isinstance(__pre, tuple) or len(__pre) < 1:
+
+            print("[ERROR] preprocess_data が不正な値を返しました（tuple想定）")
+
+            X = None
+
+        else:
+
+            X = __pre[0]
+
         if X is None:
             print(f"[WARNING] {test_date_str} の学習データが無効です")
             continue
@@ -1825,7 +1853,18 @@ def bulk_predict_all_past_draws():
             latest_data = df.tail(10).copy()
             train_data = df.copy()
 
-            X, _, _ = preprocess_data(train_data)
+            __pre = preprocess_data()
+
+            if not isinstance(__pre, tuple) or len(__pre) < 1:
+
+                print("[ERROR] preprocess_data が不正な値を返しました（tuple想定）")
+
+                X = None
+
+            else:
+
+                X = __pre[0]
+
             if X is None:
                 print("[WARNING] 未来予測用の学習データが無効です")
             else:
