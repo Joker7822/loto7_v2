@@ -3,7 +3,7 @@ catboost
 lightgbm
 statsmodels
 optuna
-gym
+gymnasium
 aiohttp
 neuralforecast
 onnxruntime
