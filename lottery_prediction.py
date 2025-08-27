@@ -3,53 +3,6 @@
 import os
 import json
 
-# === helper moved to module level ===
-def _stable_diverse_selection(numbers_only, confidence_scores, latest_data,
-                            k=30, lambda_div=0.6, temperature=0.35):
-    import hashlib, numpy as np, pandas as pd
-    # 1) 安定シード（抽せん日で決定）
-    if isinstance(latest_data, pd.DataFrame) and "抽せん日" in latest_data.columns:
-        td = str(pd.to_datetime(latest_data["抽せん日"].max()).date())
-    else:
-        td = "unknown"
-    seed = int(hashlib.md5(td.encode()).hexdigest()[:8], 16)
-    set_global_seed(seed)
-
-    # 2) マージナル確率
-    conf = np.array(confidence_scores, dtype=float)
-    conf = (conf - conf.min()) / (conf.max() - conf.min() + 1e-9)
-    weights = np.exp(conf / max(1e-6, temperature))
-    weights = weights / (weights.sum() + 1e-9)
-
-    marg = np.zeros(37)
-    for cand, w in zip(numbers_only, weights):
-        for n in cand:
-            marg[n-1] += w
-    marg = marg / (marg.sum() + 1e-9)
-
-    base_scores = [sum(np.log(marg[n-1] + 1e-9) for n in cand) for cand in numbers_only]
-
-    # 3) Greedy多様化（Jaccardペナルティ）
-    selected, used = [], set()
-    for _ in range(min(k, len(numbers_only))):
-        best_i, best_val = None, -1e12
-        for i, cand in enumerate(numbers_only):
-            if i in used:
-                continue
-            penalty = 0.0
-            for s in selected:
-                inter = len(set(cand) & set(s))
-                union = len(set(cand) | set(s))
-                penalty += inter / union
-            val = base_scores[i] - lambda_div * penalty
-            if val > best_val:
-                best_val, best_i = val, i
-        used.add(best_i)
-        selected.append(numbers_only[best_i])
-    return selected
-
-
-
 optuna_dir = "optuna_results"
 optimized_params = {}
 
@@ -940,13 +893,12 @@ class LotoPredictor:
 
     def predict(self, latest_data, num_candidates=50):
         print(f"[INFO] 予測を開始（候補数: {num_candidates}）")
-        __pre = preprocess_data()
+        __pre = preprocess_data(latest_data)
         if not isinstance(__pre, tuple) or len(__pre) < 1:
             print("[ERROR] preprocess_data が不正な値を返しました（tuple想定）")
             X = None
         else:
             X = __pre[0]
-
 
         if X is None or len(X) == 0:
             print("[ERROR] 予測用データが空です")
@@ -1100,21 +1052,55 @@ class LotoPredictor:
                         print(f"[WARNING] BNN予測中にエラー発生: {e}")
 
             print(f"[INFO] 総予測候補数（全モデル統合）: {len(all_predictions)}件")
-            numbers_only = [pred[0] for pred in all_predictions]
-            confidence_scores = [pred[1] for pred in all_predictions]
-
-            # === ここで外だしした関数を呼ぶだけ ===
-            numbers_only = _stable_diverse_selection(
-                numbers_only, confidence_scores, latest_data,
-                k=30, lambda_div=0.6, temperature=0.35
-            )
-            confidence_scores = confidence_scores[:len(numbers_only)]
-
         except Exception as e:
             print(f"[ERROR] 予測中にエラー発生: {e}")
             traceback.print_exc()
             return numbers_only, confidence_scores
             
+        def _stable_diverse_selection(numbers_only, confidence_scores, latest_data,
+                                    k=30, lambda_div=0.6, temperature=0.35):
+            import hashlib, numpy as np, pandas as pd
+            # 1) 安定シード（抽せん日で決定）
+            if isinstance(latest_data, pd.DataFrame) and "抽せん日" in latest_data.columns:
+                td = str(pd.to_datetime(latest_data["抽せん日"].max()).date())
+            else:
+                td = "unknown"
+            seed = int(hashlib.md5(td.encode()).hexdigest()[:8], 16)
+            set_global_seed(seed)
+
+            # 2) マージナル確率
+            conf = np.array(confidence_scores, dtype=float)
+            conf = (conf - conf.min()) / (conf.max() - conf.min() + 1e-9)
+            weights = np.exp(conf / max(1e-6, temperature))
+            weights = weights / (weights.sum() + 1e-9)
+
+            marg = np.zeros(37)
+            for cand, w in zip(numbers_only, weights):
+                for n in cand:
+                    marg[n-1] += w
+            marg = marg / (marg.sum() + 1e-9)
+
+            base_scores = [sum(np.log(marg[n-1] + 1e-9) for n in cand) for cand in numbers_only]
+
+            # 3) Greedy多様化（Jaccardペナルティ）
+            selected, used = [], set()
+            for _ in range(min(k, len(numbers_only))):
+                best_i, best_val = None, -1e12
+                for i, cand in enumerate(numbers_only):
+                    if i in used:
+                        continue
+                    penalty = 0.0
+                    for s in selected:
+                        inter = len(set(cand) & set(s))
+                        union = len(set(cand) | set(s))
+                        penalty += inter / union
+                    val = base_scores[i] - lambda_div * penalty
+                    if val > best_val:
+                        best_val, best_i = val, i
+                used.add(best_i)
+                selected.append(numbers_only[best_i])
+            return selected
+
         try:
             numbers_only = _stable_diverse_selection(
                 numbers_only, confidence_scores, latest_data,
@@ -1390,16 +1376,11 @@ def main_with_improved_predictions():
     if accuracy_results is not None and not accuracy_results.empty:
         print("過去の予測精度を評価しました。")
 
-    __pre = preprocess_data()
-
+    __pre = preprocess_data(data)
     if not isinstance(__pre, tuple) or len(__pre) < 1:
-
         print("[ERROR] preprocess_data が不正な値を返しました（tuple想定）")
-
         X = None
-
     else:
-
         X = __pre[0]
 
     input_size = X.shape[1] if X is not None else 10
@@ -1802,16 +1783,11 @@ def bulk_predict_all_past_draws():
         train_data = df.iloc[:i].copy()
         latest_data = df.iloc[i-10:i].copy()
 
-        __pre = preprocess_data()
-
+        __pre = preprocess_data(train_data)
         if not isinstance(__pre, tuple) or len(__pre) < 1:
-
             print("[ERROR] preprocess_data が不正な値を返しました（tuple想定）")
-
             X = None
-
         else:
-
             X = __pre[0]
 
         if X is None:
@@ -1853,16 +1829,11 @@ def bulk_predict_all_past_draws():
             latest_data = df.tail(10).copy()
             train_data = df.copy()
 
-            __pre = preprocess_data()
-
+            __pre = preprocess_data(train_data)
             if not isinstance(__pre, tuple) or len(__pre) < 1:
-
                 print("[ERROR] preprocess_data が不正な値を返しました（tuple想定）")
-
                 X = None
-
             else:
-
                 X = __pre[0]
 
             if X is None:
