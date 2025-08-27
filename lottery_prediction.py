@@ -1116,7 +1116,7 @@ class LotoPredictor:
             except Exception as e:
                 print(f"[ERROR] 予測中にエラー発生: {e}")
                 traceback.print_exc()
-                return [], []
+                return ([], [])
 
             try:
                 numbers_only = _stable_diverse_selection(
@@ -1128,7 +1128,7 @@ class LotoPredictor:
             except Exception as e:
                 print(f"[ERROR] 予測中にエラー発生: {e}")
                 traceback.print_exc()
-                return [], []
+                return ([], [])
 
 def evaluate_predictions(predictions, actual_numbers):
     matches = []
