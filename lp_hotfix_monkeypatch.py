@@ -5,7 +5,8 @@ import random
 import traceback
 import lottery_prediction as lp
 
-_ORIG_PREDICT = lp.LotoPredictor.predict
+# オリジナル predict が存在しない環境でも壊れないように安全取得
+_ORIG_PREDICT = getattr(lp.LotoPredictor, "predict", None)
 
 def _fallback_predict(self, latest_data, num_candidates=50):
     numbers_only, confidence_scores = [], []
@@ -57,30 +58,16 @@ def _fallback_predict(self, latest_data, num_candidates=50):
     return numbers_only, confidence_scores
 
 def _safe_predict(self, latest_data, num_candidates=50):
-    numbers_only, confidence_scores = [], []
     try:
-        try:
-            X, _, _ = lp.preprocess_data(latest_data)
-            X_df = pd.DataFrame(X)
-            if not getattr(self, "feature_names", None):
-                print("Warning: self.feature_names が未定義です → フォールバック作成")
-                self.feature_names = [str(c) for c in X_df.columns]
-            try:
-                X_df.columns = self.feature_names
-            except Exception as e:
-                print("[WARN] feature_names の適用に失敗:", e)
-                if len(self.feature_names) != X_df.shape[1]:
-                    self.feature_names = [str(c) for c in X_df.columns]
-        except Exception as e:
-            print("[SAFE] preprocess_data 失敗（フォールバックへ）:", e)
-
+        # オリジナルがあって必要条件を満たすならそれを使う
         ready_automl = hasattr(self, "regression_models") and self.regression_models and all(m is not None for m in self.regression_models)
         ready_lstm = hasattr(self, "lstm_model") and self.lstm_model is not None
         ready_feats = getattr(self, "feature_names", None) is not None
 
-        if ready_automl and ready_lstm and ready_feats:
+        if _ORIG_PREDICT and ready_automl and ready_lstm and ready_feats:
             return _ORIG_PREDICT(self, latest_data, num_candidates=num_candidates)
 
+        # そうでなければフォールバック
         return _fallback_predict(self, latest_data, num_candidates=num_candidates)
 
     except Exception as e:
@@ -88,4 +75,5 @@ def _safe_predict(self, latest_data, num_candidates=50):
         traceback.print_exc()
         return _fallback_predict(self, latest_data, num_candidates=num_candidates)
 
+# ここで安全にモンキーパッチ
 lp.LotoPredictor.predict = _safe_predict
