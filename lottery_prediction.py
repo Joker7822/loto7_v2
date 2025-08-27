@@ -938,197 +938,134 @@ class LotoPredictor:
                 self.regression_models[j] = TabularPredictor.load(ag_path)
                 print(f"[INFO] AutoGluon モデル {j} をロードしました")
 
-    def predict(self, latest_data, num_candidates=50):
-            print(f"[INFO] 予測を開始（候補数: {num_candidates}）")
+    
+def predict(self, latest_data, num_candidates=50):
+    """
+    必ず (numbers_only, confidence_scores) を返す。
+    numbers_only: List[List[int]]  (各7個、1..37、昇順、重複なし)
+    confidence_scores: List[float] (numbers_only と同じ長さ)
+    """
+    try:
+        print(f"[INFO] 予測を開始（候補数: {num_candidates}）")
 
-            numbers_only = []
-            confidence_scores = []
-            __pre = preprocess_data(latest_data)
-            if not isinstance(__pre, tuple) or len(__pre) < 1:
-                print("[ERROR] preprocess_data が不正な値を返しました（tuple想定）")
-                X = None
-            else:
-                X = __pre[0]
+        # --- 前処理の安全取得 ---
+        __pre = preprocess_data(latest_data)
+        if not (isinstance(__pre, tuple) and len(__pre) >= 1):
+            print("[ERROR] preprocess_data が不正な値を返しました（tuple想定）")
+            return ([], [])
+        X = __pre[0]
 
+        if X is None or len(X) == 0:
+            print("[ERROR] 予測用データが空です")
+            return ([], [])
 
-            if X is None or len(X) == 0:
-                print("[ERROR] 予測用データが空です")
-                return [], []
+        print(f"[DEBUG] 予測用データの shape: {X.shape}")
 
-            print(f"[DEBUG] 予測用データの shape: {X.shape}")
+        import numpy as np
+        import torch
+        import random
+        import time
 
-            freq_score = calculate_number_frequencies(latest_data)
-            cycle_score = calculate_number_cycle_score(latest_data)
-            all_predictions = []
+        # --- スコア用の補助辞書 ---
+        freq_score = calculate_number_frequencies(latest_data)
+        cycle_score = calculate_number_cycle_score(latest_data)
 
-            def append_prediction(numbers, base_confidence=0.8):
-                numbers = [int(n) for n in numbers]  # ← 安全キャスト
-                score = sum(freq_score.get(n, 0) for n in numbers) - sum(cycle_score.get(n, 0) for n in numbers)
-                confidence = base_confidence + (score / 500.0)
-                all_predictions.append((numbers, confidence))
+        # すべての候補を一旦ここに貯める
+        all_predictions = []
 
-            try:
-                X_df = pd.DataFrame(X)
+        def normalize_numbers(nums):
+            """1..37 にクリップ、7個に整形、昇順・重複なしを保証"""
+            nums = [int(n) for n in nums]
+            nums = [min(37, max(1, n)) for n in nums]
+            nums = sorted(set(nums))
+            # 7個未満ならランダム補完（重複なし）
+            while len(nums) < 7:
+                add = random.randint(1, 37)
+                if add not in nums:
+                    nums.append(add)
+                    nums.sort()
+            # 7個超過なら先頭から7つ
+            return nums[:7]
 
-                if self.feature_names:
-                    for name in self.feature_names:
-                        if name not in X_df.columns:
-                            X_df[name] = 0.0
-                    X_df = X_df[self.feature_names]
-                    X = X_df.values
-                else:
-                    print("[WARNING] self.feature_names が未定義です")
+        def append_prediction(numbers, base_confidence=0.8):
+            numbers = normalize_numbers(numbers)
+            score = sum(freq_score.get(n, 0) for n in numbers) - sum(cycle_score.get(n, 0) for n in numbers)
+            confidence = float(base_confidence + (score / 500.0))
+            all_predictions.append((numbers, confidence))
 
-                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # --- 特徴量名の同期 ---
+        import pandas as pd
+        X_df = pd.DataFrame(X)
+        if getattr(self, "feature_names", None):
+            for name in self.feature_names:
+                if name not in X_df.columns:
+                    X_df[name] = 0.0
+            X_df = X_df[self.feature_names]
+            X = X_df.values
+        else:
+            print("[WARNING] self.feature_names が未定義です")
 
-                for i in range(num_candidates):
-                    set_global_seed(100 + i)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-                    ml_predictions = np.array([
-                        self.regression_models[j].predict(X_df) for j in range(7)
-                    ]).T
+        # === AutoGluon + LSTM ===
+        try:
+            for i in range(num_candidates):
+                set_global_seed(100 + i)
+                ml_predictions = np.array([
+                    self.regression_models[j].predict(X_df) for j in range(7)
+                ]).T
+                self.lstm_model.to(device)
+                self.lstm_model.eval()
+                X_tensor = torch.tensor(X.reshape(-1, 1, X.shape[1]), dtype=torch.float32).to(device)
+                with torch.no_grad():
+                    lstm_predictions = self.lstm_model(X_tensor).detach().cpu().numpy()
+                final_predictions = (ml_predictions + lstm_predictions) / 2.0
+                pred_row = np.round(final_predictions[0]).astype(int)
+                pred_row = np.clip(pred_row, 1, 37)
+                append_prediction(pred_row, base_confidence=1.0)
+        except Exception as e:
+            print(f"[WARN] AutoGluon/LSTMで例外: {e}")
 
-                    self.lstm_model.to(device)
-                    self.lstm_model.eval()
-                    X_tensor = torch.tensor(X.reshape(-1, 1, X.shape[1]), dtype=torch.float32).to(device)
-                    with torch.no_grad():
-                        lstm_predictions = self.lstm_model(X_tensor).detach().cpu().numpy()
+        # --- 候補がゼロなら空タプルを返す ---
+        if not all_predictions:
+            return ([], [])
 
-                    final_predictions = (ml_predictions + lstm_predictions) / 2
+        numbers_only = [p for (p, _) in all_predictions]
+        confidence_scores = [c for (_, c) in all_predictions]
 
-                    if self.set_transformer_model:
-                        st_predictions = predict_with_set_transformer(self.set_transformer_model, X)
-                        final_predictions = (final_predictions + st_predictions) / 2
+        # --- 多様化選抜 ---
+        try:
+            numbers_only = _stable_diverse_selection(
+                numbers_only, confidence_scores, latest_data,
+                k=30, lambda_div=0.6, temperature=0.35
+            )
+            confidence_scores = confidence_scores[:len(numbers_only)]
+        except Exception as e:
+            print(f"[WARN] 多様化選抜で例外: {e}")
+            seen, uniq = set(), []
+            for cand in numbers_only:
+                t = tuple(cand)
+                if t not in seen:
+                    seen.add(t)
+                    uniq.append(cand)
+                if len(uniq) >= 30:
+                    break
+            numbers_only = uniq
+            confidence_scores = confidence_scores[:len(numbers_only)]
 
-                    if hasattr(self, "tabnet_model") and self.tabnet_model is not None:
-                        from tabnet_module import predict_tabnet
-                        tabnet_preds = predict_tabnet(self.tabnet_model, X)
-                        final_predictions = (final_predictions + tabnet_preds) / 2
+        numbers_only = [normalize_numbers(n) for n in numbers_only]
+        confidence_scores = [float(c) for c in confidence_scores]
+        if len(numbers_only) != len(confidence_scores):
+            m = min(len(numbers_only), len(confidence_scores))
+            numbers_only, confidence_scores = numbers_only[:m], confidence_scores[:m]
 
-                    for pred in final_predictions:
-                        numbers = np.round(pred).astype(int)
-                        numbers = np.clip(numbers, 1, 37)
-                        numbers = np.sort(numbers)
-                        append_prediction(numbers, base_confidence=1.0)
+        return (numbers_only, confidence_scores)
 
-                if self.gan_model:
-                    for i in range(num_candidates):
-                        set_global_seed(int(time.time() * 1000) % 100000 + i)  # 毎回異なるシード
-                        gan_sample = self.gan_model.generate_samples(1)[0]
+    except Exception as e:
+        print(f"[ERROR] 予測中に未捕捉の例外: {e}")
+        import traceback as _tb; _tb.print_exc()
+        return ([], [])
 
-                        # ★ 数字にランダム性を追加（例：温度スケーリング）
-                        logits = gan_sample / 0.7  # "温度" を下げるとシャープに、高くすると多様に
-                        probs = logits / logits.sum()
-                        numbers = np.random.choice(37, 7, replace=False, p=probs)
-
-                        append_prediction(np.sort(numbers + 1), base_confidence=0.8)
-
-                if self.ppo_model:
-                    for i in range(num_candidates):
-                        set_global_seed(random.randint(1000, 999999))  # 🔁 シードを毎回変更
-                        obs = np.zeros(37, dtype=np.float32)
-
-                        # 多様性確保のため deterministic=False に変更
-                        action, _ = self.ppo_model.predict(obs, deterministic=False)
-
-                        numbers = np.argsort(action)[-7:] + 1
-                        append_prediction(np.sort(numbers), base_confidence=0.85)
-
-                if self.diffusion_model:
-                    from diffusion_module import sample_diffusion_ddpm
-                    print("[INFO] Diffusion モデルによる生成を開始")
-
-                    for i in range(num_candidates):
-                        set_global_seed(random.randint(1000, 999999))  # 🔁 乱数シードを毎回変える
-
-                        try:
-                            sample = sample_diffusion_ddpm(
-                                self.diffusion_model,
-                                self.diffusion_betas,
-                                self.diffusion_alphas_cumprod,
-                                dim=37,
-                                num_samples=1  # ★ 1件ずつ生成して多様性を確保
-                            )[0]
-
-                            numbers = np.argsort(sample)[-7:] + 1
-                            numbers = np.sort(numbers)
-                            append_prediction(numbers, base_confidence=0.84)
-
-                        except Exception as e:
-                            print(f"[WARNING] Diffusion 生成中にエラー: {e}")
-
-                if self.gnn_model:
-                    from gnn_core import build_cooccurrence_graph
-                    print("[INFO] GNN推論を開始")
-                    graph_data = build_cooccurrence_graph(latest_data)
-                    self.gnn_model.eval()
-                    with torch.no_grad():
-                        gnn_scores = self.gnn_model(graph_data.x, graph_data.edge_index).squeeze().numpy()
-                        for i in range(num_candidates):
-                            set_global_seed(400 + i)
-                            numbers = np.argsort(gnn_scores)[-7:] + 1
-                            append_prediction(sorted([int(n) for sub in numbers for n in (sub if isinstance(sub, (list, np.ndarray)) else [sub])]), base_confidence=0.83)
-
-                if self.bnn_model:
-                    from bnn_module import predict_bayesian_regression
-                    print("[INFO] BNNモデルによる予測を実行中")
-
-                    for i in range(num_candidates):
-                        set_global_seed(random.randint(1000, 999999))  # 🔁 毎回異なるシードで予測
-
-                        try:
-                            bnn_preds = predict_bayesian_regression(
-                                self.bnn_model,
-                                self.bnn_guide,
-                                X,
-                                samples=1  # 🔁 1サンプルずつ個別生成
-                            )
-
-                            for pred in bnn_preds:
-                                pred = np.array(pred).flatten()
-                                numbers = np.round(pred).astype(int)
-                                numbers = np.clip(numbers, 1, 37)
-                                numbers = np.unique(numbers)
-
-                                # 必要なら不足分をランダム補完（BNNは被りが出やすいため）
-                                while len(numbers) < 7:
-                                    add = random.randint(1, 37)
-                                    if add not in numbers:
-                                        numbers = np.append(numbers, add)
-
-                                numbers = np.sort(numbers[:7])  # 念のため7個制限
-                                append_prediction(numbers, base_confidence=0.83)
-
-                        except Exception as e:
-                            print(f"[WARNING] BNN予測中にエラー発生: {e}")
-
-                print(f"[INFO] 総予測候補数（全モデル統合）: {len(all_predictions)}件")
-                numbers_only = [pred[0] for pred in all_predictions]
-                confidence_scores = [pred[1] for pred in all_predictions]
-
-                # === ここで外だしした関数を呼ぶだけ ===
-                numbers_only = _stable_diverse_selection(
-                    numbers_only, confidence_scores, latest_data,
-                    k=30, lambda_div=0.6, temperature=0.35
-                )
-                confidence_scores = confidence_scores[:len(numbers_only)]
-
-            except Exception as e:
-                print(f"[ERROR] 予測中にエラー発生: {e}")
-                traceback.print_exc()
-                return ([], [])
-
-            try:
-                numbers_only = _stable_diverse_selection(
-                    numbers_only, confidence_scores, latest_data,
-                    k=30, lambda_div=0.6, temperature=0.35
-                )
-                confidence_scores = confidence_scores[:len(numbers_only)]
-
-            except Exception as e:
-                print(f"[ERROR] 予測中にエラー発生: {e}")
-                traceback.print_exc()
-                return ([], [])
 
 def evaluate_predictions(predictions, actual_numbers):
     matches = []
