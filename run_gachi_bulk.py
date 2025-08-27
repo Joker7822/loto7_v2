@@ -105,8 +105,8 @@ def bulk_predict_all_past_draws():
 
             res = predictor.predict(latest_data)
 
-            if not (isinstance(res, tuple) and len(res) == 2):
-
+            if not (isinstance(res, (tuple, list)) and len(res) == 2):
+                
                 raise RuntimeError("predict() must return (predictions, confidence_scores)")
 
             predictions, confidence_scores = res
@@ -175,7 +175,7 @@ def bulk_predict_all_past_draws():
 
                     res = predictor.predict(latest_data)
 
-                    if not (isinstance(res, tuple) and len(res) == 2):
+                    if not (isinstance(res, (tuple, list)) and len(res) == 2):
 
                         raise RuntimeError("predict() must return (predictions, confidence_scores)")
 
