@@ -102,10 +102,10 @@ def bulk_predict_all_past_draws():
             predictor = predictor_cache[input_size]
 
         try:
-            res = predictor.predict(latest_data)
-            if not (isinstance(res, tuple) and len(res) == 2):
-                raise RuntimeError("predict() must return (predictions, confidence_scores)")
-            predictions, confidence_scores = res
+                res = predictor.predict(latest_data)
+                if not (isinstance(res, tuple) and len(res) == 2):
+                    raise RuntimeError("predict() must return (predictions, confidence_scores)")
+                predictions, confidence_scores = res
         except Exception as e:
             print(f"[ERROR] 通常predict失敗: {e}")
             predictions, confidence_scores = None, None
@@ -168,10 +168,10 @@ def bulk_predict_all_past_draws():
                     predictor = predictor_cache[input_size]
 
                 try:
-            res = predictor.predict(latest_data)
-            if not (isinstance(res, tuple) and len(res) == 2):
-                raise RuntimeError("predict() must return (predictions, confidence_scores)")
-            predictions, confidence_scores = res
+                res = predictor.predict(latest_data)
+                if not (isinstance(res, tuple) and len(res) == 2):
+                    raise RuntimeError("predict() must return (predictions, confidence_scores)")
+                predictions, confidence_scores = res
                 except Exception as e:
                     print(f"[ERROR] 未来の通常predict失敗: {e}")
                     predictions, confidence_scores = None, None
