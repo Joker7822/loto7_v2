@@ -371,7 +371,7 @@ def preprocess_data(data):
 
     if processed_data.empty:
         print("エラー: 特徴量生成後のデータが空です。データのフォーマットを確認してください。")
-                return [], []
+        return [], []
 
     print("=== 特徴量作成後のデータ ===")
     print(processed_data.head())
@@ -384,7 +384,7 @@ def preprocess_data(data):
 
     if X.empty:
         print("エラー: 数値特徴量が作成されず、データが空になっています。")
-                return [], []
+        return [], []
 
     # スケーリング
     scaler = MinMaxScaler()
@@ -398,7 +398,7 @@ def preprocess_data(data):
         y = np.array([list(map(int, nums)) for nums in processed_data['本数字']])
     except Exception as e:
         print(f"エラー: 目標変数の作成時に問題が発生しました: {e}")
-                return [], []
+        return [], []
 
     return X_scaled, y, scaler
 
@@ -459,7 +459,7 @@ def save_self_predictions(predictions, file_path="self_predictions.csv", max_rec
 def load_self_predictions(file_path="self_predictions.csv", min_match_threshold=3, true_data=None):
     if not os.path.exists(file_path):
         print(f"[INFO] 自己予測ファイル {file_path} が見つかりません。")
-                return [], []
+        return [], []
 
     try:
         # 🔥 高速版に置き換え！
@@ -478,7 +478,7 @@ def load_self_predictions(file_path="self_predictions.csv", min_match_threshold=
 
     except Exception as e:
         print(f"[ERROR] 自己予測データ読み込みエラー: {e}")
-                return [], []
+        return [], []
 
 def evaluate_self_predictions(self_predictions, true_data):
     """
@@ -705,7 +705,7 @@ class LotoPredictor:
     def predict_with_onnx(self, X):
         if self.onnx_session is None:
             print("[ERROR] ONNX モデルがロードされていません")
-                return [], []
+        return [], []
 
         input_name = self.onnx_session.get_inputs()[0].name
         output = self.onnx_session.run(None, {input_name: X.astype(np.float32)})
@@ -1241,7 +1241,7 @@ def evaluate_prediction_accuracy_with_bonus(predictions_file="loto7_predictions.
                 return [], []
         except Exception as read_err:
             print(f"[WARNING] 予測ファイルの読み込み失敗: {read_err}")
-                return [], []
+        return [], []
 
         results_df = pd.read_csv(results_file, encoding='utf-8-sig')
         evaluation_results = []
@@ -1337,7 +1337,7 @@ def evaluate_prediction_accuracy_with_bonus(predictions_file="loto7_predictions.
 
     except Exception as e:
         print(f"予測精度の評価エラー: {e}")
-                return [], []
+        return [], []
 
 # 予測結果をCSVファイルに保存する関数
 def save_predictions_to_csv(predictions, drawing_date, filename="loto7_predictions.csv"):
