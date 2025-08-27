@@ -940,7 +940,10 @@ class LotoPredictor:
 
     def predict(self, latest_data, num_candidates=50):
         print(f"[INFO] 予測を開始（候補数: {num_candidates}）")
-        __pre = preprocess_data(latest_data)
+        
+        numbers_only = []
+        confidence_scores = []
+__pre = preprocess_data(latest_data)
         if not isinstance(__pre, tuple) or len(__pre) < 1:
             print("[ERROR] preprocess_data が不正な値を返しました（tuple想定）")
             X = None
