@@ -1,124 +1,70 @@
-import numpy as np
-import pandas as pd
-from sklearn.model_selection import train_test_split
+# optimize_all_models.py (replacement)
 import optuna
-import json
-import os
-
-from lottery_prediction import git_commit_and_push
-
-from tabnet_module import train_tabnet
-from autogluon.tabular import TabularPredictor
+import pandas as pd
+from lottery_prediction import parse_number_string, classify_rank
 from diffusion_module import train_diffusion_ddpm
-from stacking_optuna import optimize_stacking
-from test_with_gnn import preprocess_data, convert_numbers_to_binary_vectors
 
-RESULT_DIR = "optuna_results"
-os.makedirs(RESULT_DIR, exist_ok=True)
+RANK_VALUE = {"1等":6,"2等":5,"3等":4,"4等":3,"5等":2,"6等":1,"該当なし":0}
 
-def optimize_autogluon(X, y, model_index):
+def load_truth(csv_path="loto7_prediction_evaluation_with_bonus.csv"):
+    df = pd.read_csv(csv_path, encoding="utf-8-sig")
+    def to_list(col):
+        out = []
+        for v in df[col].tolist():
+            try:
+                out.append(parse_number_string(str(v)))
+            except Exception:
+                out.append([])
+        return out
+    if "当選本数字" not in df.columns or "当選ボーナス" not in df.columns:
+        raise RuntimeError("評価CSVに当選列がありません")
+    main = to_list("当選本数字")
+    bonus = to_list("当選ボーナス")
+    return list(zip(main, bonus))
+
+def vecs_to_sets(vectors, topk=7):
+    import numpy as np
+    out = []
+    for v in vectors:
+        v = np.asarray(v).reshape(-1)
+        if v.size != 37:
+            v = np.resize(v, (37,))
+        idx = np.argsort(-v)[:topk] + 1
+        out.append(sorted(set(idx.tolist()))[:7])
+    return out
+
+def score_sets(cands, truth_rows):
+    tot = 0.0
+    for main, bonus in truth_rows:
+        best = 0
+        sm, sb = set(main), set(bonus)
+        for cand in cands:
+            r = classify_rank(len(sm & set(cand)), len(sb & set(cand)))
+            best = max(best, RANK_VALUE.get(r,0))
+        tot += best
+    return tot / max(1,len(truth_rows))
+
+def optimize_diffusion(data_bin):
+    truth_rows = load_truth()
     def objective(trial):
-        params = {
-            'GBM': {'extra_trees': trial.suggest_categorical('gbm_extra_trees', [True, False])},
-            'CAT': {'iterations': trial.suggest_int('cat_iterations', 300, 1000)},
-            'XGB': {'n_estimators': trial.suggest_int('xgb_n_estimators', 200, 500)},
-            'RF': {'n_estimators': trial.suggest_int('rf_n_estimators', 100, 300)},
-        }
-
-        df = pd.DataFrame(X)
-        df['target'] = y[:, model_index]
-        predictor = TabularPredictor(label='target', verbosity=0).fit(
-            df,
-            hyperparameters=params,
-            presets="best_quality",
-            time_limit=300,
-        )
-        return predictor.leaderboard(silent=True).iloc[0]['score_val']
-
+        batch_size = trial.suggest_categorical("batch_size", [32,64])
+        epochs = trial.suggest_int("epochs", 300, 1500)
+        model,_,_ = train_diffusion_ddpm(data_bin, epochs=epochs, batch_size=batch_size)
+        if hasattr(model,"sample"):
+            samples = model.sample(400)
+        elif hasattr(model,"generate_samples"):
+            samples = model.generate_samples(400)
+        else:
+            return 0.0
+        sets = vecs_to_sets(samples, topk=7)
+        return score_sets(sets, truth_rows)
     study = optuna.create_study(direction="maximize")
     study.optimize(objective, n_trials=10)
     return study.best_params
 
-def optimize_tabnet(X, y):
-    def objective(trial):
-        from pytorch_tabnet.tab_model import TabNetRegressor
-        model = TabNetRegressor(
-            n_d=trial.suggest_int("n_d", 8, 64),
-            n_a=trial.suggest_int("n_a", 8, 64),
-            n_steps=trial.suggest_int("n_steps", 3, 10),
-            gamma=trial.suggest_float("gamma", 1.0, 2.0),
-            lambda_sparse=trial.suggest_float("lambda_sparse", 1e-5, 1e-1),
-            seed=42
-        )
-        model.fit(
-            X_train=X, y_train=y,
-            eval_set=[(X, y)],
-            max_epochs=50,
-            patience=10,
-            batch_size=trial.suggest_categorical("batch_size", [64, 128]),
-            virtual_batch_size=trial.suggest_categorical("virtual_batch_size", [32, 64])
-        )
-        preds = model.predict(X)
-        return -np.mean((y - preds) ** 2)
-
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=10)
-    return study.best_params
-
-def optimize_diffusion(data_bin):
-    def objective(trial):
-        batch_size = trial.suggest_categorical("batch_size", [32, 64])
-        epochs = trial.suggest_int("epochs", 500, 2000)
-
-        model, _, _ = train_diffusion_ddpm(data_bin, epochs=epochs, batch_size=batch_size)
-        return -epochs / batch_size  # 仮スコア（改善余地あり）
-
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=5)
-    return study.best_params
-
-def optimize_stacking_wrapper(train_preds, true_labels):
-    return optimize_stacking(train_preds, true_labels)
-
-def main():
-    data = pd.read_csv("loto7_prediction_evaluation_with_bonus.csv", encoding='utf-8-sig')
-    X, y, _ = preprocess_data(data)
-    X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    print("\n=== AutoGluon最適化開始 ===")
-    for i in range(7):
-        ag_params = optimize_autogluon(X_train, y_train, i)
-        with open(f"{RESULT_DIR}/autogluon_pos{i}.json", "w") as f:
-            json.dump(ag_params, f, indent=2)
-        print(f"Pos{i} → {ag_params}")
-
-    print("\n=== TabNet最適化開始 ===")
-    tabnet_params = optimize_tabnet(X_train, y_train)
-    with open(f"{RESULT_DIR}/tabnet.json", "w") as f:
-        json.dump(tabnet_params, f, indent=2)
-    print(f"TabNet → {tabnet_params}")
-
-    print("\n=== Diffusion最適化開始 ===")
-    data_bin = convert_numbers_to_binary_vectors(data)
-    diff_params = optimize_diffusion(data_bin)
-    with open(f"{RESULT_DIR}/diffusion.json", "w") as f:
-        json.dump(diff_params, f, indent=2)
-    print(f"Diffusion → {diff_params}")
-
-    print("\n=== スタッキング重み最適化 ===")
-    dummy_preds = {
-        'lstm': y_train[:, :7],
-        'automl': y_train[:, :7],
-        'gan': y_train[:, :7],
-        'ppo': y_train[:, :7],
-    }
-    stack_params = optimize_stacking_wrapper(dummy_preds, y_train.tolist())
-    with open(f"{RESULT_DIR}/stacking.json", "w") as f:
-        json.dump(stack_params, f, indent=2)
-    print(f"Stacking → {stack_params}")
-    # Push all updated Optuna params
-    git_commit_and_push(RESULT_DIR, "Update Optuna hyperparameters")
+def optimize_stacking_wrapper(base_preds, y_train):
+    # placeholder: real OOF preds must be provided by caller
+    return {"note":"Provide real OOF preds to optimize_stacking"}
 
 if __name__ == "__main__":
-    main()
-
+    print("Replacement optimize_all_models ready. Integrate into pipeline.")
