@@ -1,13 +1,32 @@
+# lp_hotfix_monkeypatch.py  ← 丸ごと置き換え
 
 import numpy as np
 import pandas as pd
 import random
 import traceback
-import lottery_prediction as lp
 
-# オリジナル predict が存在しない環境でも壊れないように安全取得
-_ORIG_PREDICT = getattr(lp.LotoPredictor, "predict", None)
+# --- まず lottery_prediction を安全に import
+try:
+    import lottery_prediction as lp
+except Exception as e:
+    lp = None
+    print(f"[HOTFIX] lottery_prediction の import 失敗: {e}")
 
+# --- extended_predictor 側（存在すれば使う）
+ExtendedCls = None
+try:
+    from extended_predictor import LotoPredictorGachi as ExtendedCls
+except Exception as e:
+    print(f"[HOTFIX] extended_predictor の import 失敗（許容）: {e}")
+
+# --- 対象クラスの収集（存在確認してから）
+TargetClasses = []
+if lp is not None and hasattr(lp, "LotoPredictor"):
+    TargetClasses.append(lp.LotoPredictor)
+if ExtendedCls is not None:
+    TargetClasses.append(ExtendedCls)
+
+# ===== フォールバック予測 =====
 def _fallback_predict(self, latest_data, num_candidates=50):
     numbers_only, confidence_scores = [], []
     freq = {i: 1 for i in range(1, 38)}
@@ -33,10 +52,9 @@ def _fallback_predict(self, latest_data, num_candidates=50):
         print("[SAFE] 頻度計算失敗:", e)
 
     keys = list(range(1, 38))
-    import numpy as _np
-    weights = _np.array([freq[k] for k in keys], dtype=float)
+    weights = np.array([freq[k] for k in keys], dtype=float)
     weights = weights / (weights.sum() + 1e-9)
-    rng = _np.random.default_rng(42)
+    rng = np.random.default_rng(42)
     made = set()
     trials = max(num_candidates * 5, 200)
     for _ in range(trials):
@@ -57,23 +75,55 @@ def _fallback_predict(self, latest_data, num_candidates=50):
             confidence_scores.append(0.5)
     return numbers_only, confidence_scores
 
+# --- 可能ならオリジナル predict を拾う（どれか1つでも見つかればOK）
+_ORIG_PREDICT = None
+for cls in TargetClasses:
+    try:
+        maybe = getattr(cls, "predict", None)
+        if callable(maybe):
+            _ORIG_PREDICT = maybe
+            break
+    except Exception:
+        pass
+
 def _safe_predict(self, latest_data, num_candidates=50):
     try:
-        # オリジナルがあって必要条件を満たすならそれを使う
-        ready_automl = hasattr(self, "regression_models") and self.regression_models and all(m is not None for m in self.regression_models)
-        ready_lstm = hasattr(self, "lstm_model") and self.lstm_model is not None
-        ready_feats = getattr(self, "feature_names", None) is not None
+        # 可能なら preprocess_data で“最低限の妥当性”を確認
+        try:
+            import lottery_prediction as lp_mod
+            pre = lp_mod.preprocess_data(latest_data)
+            if not (isinstance(pre, tuple) and len(pre) >= 1 and pre[0] is not None and len(pre[0]) > 0):
+                print("[SAFE] preprocess_data 不成立 → フォールバック")
+                return _fallback_predict(self, latest_data, num_candidates=num_candidates)
+        except Exception as e:
+            print("[SAFE] preprocess_data 例外 → フォールバック:", e)
+            return _fallback_predict(self, latest_data, num_candidates=num_candidates)
 
-        if _ORIG_PREDICT and ready_automl and ready_lstm and ready_feats:
-            return _ORIG_PREDICT(self, latest_data, num_candidates=num_candidates)
+        # オリジナル predict を優先
+        if _ORIG_PREDICT is not None:
+            try:
+                res = _ORIG_PREDICT(self, latest_data, num_candidates=num_candidates)
+                if not (isinstance(res, (tuple, list)) and len(res) == 2):
+                    print("[SAFE] 親predictの戻り値が不正 → フォールバック")
+                    return _fallback_predict(self, latest_data, num_candidates=num_candidates)
+                return res
+            except Exception as e:
+                print(f"[SAFE] 親predictで例外: {e}")
+                traceback.print_exc()
+                return _fallback_predict(self, latest_data, num_candidates=num_candidates)
 
-        # そうでなければフォールバック
+        # 親が無い場合
         return _fallback_predict(self, latest_data, num_candidates=num_candidates)
 
     except Exception as e:
-        print(f"[SAFE] 親predictで例外: {e}")
+        print(f"[SAFE] _safe_predict 未捕捉例外: {e}")
         traceback.print_exc()
         return _fallback_predict(self, latest_data, num_candidates=num_candidates)
 
-# ここで安全にモンキーパッチ
-lp.LotoPredictor.predict = _safe_predict
+# --- 見つかったクラスに安全 predict をアタッチ
+if not TargetClasses:
+    print("[HOTFIX] 対象クラスが見つからなかったため、パッチをスキップしました。")
+else:
+    for cls in TargetClasses:
+        setattr(cls, "predict", _safe_predict)
+    print(f"[HOTFIX] predict を安全ラップしました（対象クラス: {len(TargetClasses)}）")
