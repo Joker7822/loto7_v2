@@ -99,7 +99,10 @@ jobs:
           fi
           git stash pop || true
 
-          git add loto7.csv
+          if [ -f loto7.csv ]; then
+            git add loto7.csv
+          fi
+
           if git diff --cached --quiet; then
             echo "No changes to loto7.csv"
           else
@@ -114,6 +117,15 @@ jobs:
           SECONDARY_BRANCH: main
           MODEL_REPO_TOKEN: ${{ secrets.MODEL_REPO_TOKEN }}
         run: xvfb-run -a python run_gachi_bulk.py
+
+      # ★ 生成物のファイル名を正規化（*_gachi → 標準名）★
+      - name: Normalize prediction filenames
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f loto7_predictions_gachi.csv ] && [ ! -f loto7_predictions.csv ]; then
+            mv loto7_predictions_gachi.csv loto7_predictions.csv
+          fi
 
       - name: Commit and push prediction results if changed
         shell: bash
@@ -135,10 +147,18 @@ jobs:
           fi
           git stash pop || true
 
-          git add loto7_predictions.csv \
-                  loto7_prediction_evaluation_with_bonus.csv \
-                  loto7_evaluation_summary.txt \
-                  self_predictions.csv
+          # 存在するファイルのみ add（pathspec エラー防止）
+          files_to_add=()
+          for f in loto7_predictions.csv loto7_prediction_evaluation_with_bonus.csv loto7_evaluation_summary.txt self_predictions.csv; do
+            [ -f "$f" ] && files_to_add+=("$f")
+          done
+
+          if [ ${#files_to_add[@]} -eq 0 ]; then
+            echo "No prediction files found to add."
+            exit 0
+          fi
+
+          git add "${files_to_add[@]}"
 
           if git diff --cached --quiet; then
             echo "No prediction result changes"
