@@ -1,149 +1,218 @@
 
-# run_gachi_bulk_rescue.py
-# ------------------------------------------------------------------
-# 自前の Predictor クラスが見つからなくても動く“レスキュー版”。
-# - 直近データから周辺確率（頻度）＋ペア共起スコアを推定
-# - ランダム探索＋多様化（Jaccardペナルティ）で Top-K を生成
-# - 生成結果を loto7_predictions_gachi.csv に保存
-# 既存の Predictor 実装が復旧したら、元の run_gachi_bulk.py に戻せます。
-# ------------------------------------------------------------------
-
+import lp_hotfix_monkeypatch
 import pandas as pd
-import numpy as np
-from collections import Counter
-from itertools import combinations
+import os
 
-def parse_number_string(s):
-    if s is None:
-        return []
-    s = str(s).strip("[]").replace(",", " ").replace("'", "").replace('"', "")
-    toks = [t for t in s.split() if t.isdigit()]
-    return [int(t) for t in toks]
+from extended_predictor import LotoPredictorGachi as LotoPredictor
+from lottery_prediction import (
+    set_global_seed,
+    preprocess_data,
+    save_self_predictions,
+    save_predictions_to_csv,
+    evaluate_prediction_accuracy_with_bonus,
+    git_commit_and_push,
+    _save_all_models_no_self,
+)
 
-def extract_numbers_cols(df):
-    # 列名に依存しないように、本数字/ボーナスを推定
-    main_col = None
-    bonus_col = None
-    for c in df.columns:
-        if "本数字" in c:
-            main_col = c
-        if "ボーナス" in c:
-            bonus_col = c
-    if main_col is None:
-        # 代表的カラム名のフォールバック
-        candidates = [c for c in df.columns if "予測番号" in c or "numbers" in c.lower()]
-        if candidates:
-            main_col = candidates[0]
-        else:
-            raise RuntimeError("本数字カラムが見つかりません（例：'本数字'）")
-    if bonus_col is None:
-        bonus_col = None  # 無くてもOK
-    return main_col, bonus_col
+def make_compat_for_evaluator(in_csv="loto7_predictions_gachi.csv",
+                              out_csv="loto7_predictions_for_eval.csv"):
+    df = pd.read_csv(in_csv, encoding="utf-8-sig")
+    out = df[["抽せん日"]].copy()
+    for i in range(1, 6):
+        src_p = f"ガチ予測{i}"
+        src_c = f"ガチ信頼度{i}"
+        if src_p in df.columns:
+            out[f"予測{i}"] = df[src_p]
+        if src_c in df.columns:
+            out[f"信頼度{i}"] = df[src_c]
+    out.to_csv(out_csv, index=False, encoding="utf-8-sig")
+    print(f"[INFO] 互換CSVを生成: {out_csv}")
 
-def build_stats(hist_df, main_col):
-    # ヒストリーから 1..37 の頻度とペア共起頻度を作成
-    freq = Counter()
-    pair = Counter()
-    for nums_raw in hist_df[main_col].tolist():
-        nums = parse_number_string(nums_raw)
-        nums = [n for n in nums if 1 <= n <= 37]
-        for n in nums:
-            freq[n] += 1
-        for a, b in combinations(sorted(set(nums)), 2):
-            pair[(a, b)] += 1
-    return freq, pair
-
-def sample_candidates(freq, pair, rng, num_samples=2000, k=7):
-    keys = list(range(1, 38))
-    fsum = sum(freq.get(i, 1) for i in keys)
-    weights = np.array([freq.get(i, 1)/fsum for i in keys], dtype=float)
-    cand_sets = []
-    scores = []
-    for _ in range(num_samples):
-        # 頻度重み付きサンプリング（重複なし）
-        sel = tuple(sorted(rng.choice(keys, size=k, replace=False, p=weights)))
-        # スコア = 個別頻度の和 + ペア共起の和
-        s = sum(freq.get(n, 0) for n in sel)
-        for a, b in combinations(sel, 2):
-            if a > b: a, b = b, a
-            s += pair.get((a, b), 0)
-        cand_sets.append(sel)
-        scores.append(float(s))
-    return cand_sets, scores
-
-def diverse_topk(cands, scores, topk=10, lambda_div=0.6):
-    # Greedy 多様化（Jaccardペナルティ）
-    order = np.argsort(-np.array(scores))
-    cands = [cands[i] for i in order]
-    bases = [scores[i] for i in order]
-    selected = []
-    for i, cand in enumerate(cands):
-        penalty = 0.0
-        A = set(cand)
-        for s in selected:
-            inter = len(A & set(s))
-            uni = len(A | set(s))
-            penalty += (inter / max(1, uni))
-        value = bases[i] - lambda_div * penalty
-        # 挿入位置最適化は省略、単純に選択
-        selected.append(cand)
-        if len(selected) >= topk:
-            break
-    # 疑似信頼度：min-max 正規化
-    sel_scores = []
-    for cand in selected:
-        s = sum(scores[j] for j, cc in enumerate(cands) if cc == cand)
-        sel_scores.append(s)
-    arr = np.array(sel_scores, dtype=float)
-    if arr.max() > arr.min():
-        conf = ((arr - arr.min()) / (arr.max() - arr.min())).tolist()
-    else:
-        conf = [0.5]*len(selected)
-    return selected, conf
-
-def save_gachi_to_csv(pairs, drawing_date, filename="loto7_predictions_gachi.csv"):
+def save_gachi_to_csv(predictions, drawing_date, filename="outputs/loto7_predictions_gachi.csv"):
     drawing_date = pd.to_datetime(drawing_date).strftime("%Y-%m-%d")
+    out_dir = os.path.dirname(filename) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    abs_path = os.path.abspath(filename)
     row = {"抽せん日": drawing_date}
-    for i, (numbers, confidence) in enumerate(pairs[:10], 1):
-        row[f"ガチ予測{i}"] = ", ".join(map(str, numbers))
+    for i, (numbers, confidence) in enumerate(predictions[:10], 1):
+        row[f"ガチ予測{i}"] = ', '.join(map(str, numbers))
         row[f"ガチ信頼度{i}"] = round(float(confidence), 3)
-    df_row = pd.DataFrame([row])
+    df = pd.DataFrame([row])
     try:
         existing = pd.read_csv(filename, encoding="utf-8-sig")
         if "抽せん日" in existing.columns:
             existing = existing[existing["抽せん日"] != drawing_date]
-        df_out = pd.concat([existing, df_row], ignore_index=True)
+        df = pd.concat([existing, df], ignore_index=True)
     except Exception:
-        df_out = df_row
-    df_out.to_csv(filename, index=False, encoding="utf-8-sig")
-    print(f"[INFO] 保存: {filename} ({drawing_date})")
+        pass
+    df.to_csv(filename, index=False, encoding="utf-8-sig")
+    print(f"[INFO] ガチ予測を {abs_path} に保存しました。")
+    try:
+        git_commit_and_push(filename, "Auto update loto7_predictions_gachi.csv [skip ci]")
+    except Exception as e:
+        print(f"[WARNING] Git commit/push failed for gachi CSV: {e}")
 
-def main():
+def bulk_predict_all_past_draws():
+    set_global_seed(42)
+
     df = pd.read_csv("loto7.csv", encoding="utf-8-sig")
-    df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors="coerce")
-    df = df.dropna(subset=["抽せん日"]).sort_values("抽せん日").reset_index(drop=True)
-    print("[INFO] 読み込み:", len(df), "件")
+    df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors='coerce')
+    df = df.sort_values("抽せん日").reset_index(drop=True)
+    print("[INFO] 抽せんデータ読み込み完了:", len(df), "件")
 
-    main_col, _ = extract_numbers_cols(df)
-    rng = np.random.default_rng(42)
+    pred_file = "loto7_predictions.csv"
+
+    skip_dates = set()
+    if os.path.exists(pred_file):
+        try:
+            pred_df = pd.read_csv(pred_file, encoding='utf-8-sig')
+            if "抽せん日" in pred_df.columns:
+                skip_dates = set(pd.to_datetime(pred_df["抽せん日"], errors='coerce').dropna().dt.strftime("%Y-%m-%d"))
+        except Exception as e:
+            print(f"[WARNING] 予測ファイル読み込みエラー: {e}")
+    else:
+        with open(pred_file, "w", encoding="utf-8-sig") as f:
+            f.write("抽せん日,予測1,信頼度1,予測2,信頼度2,予測3,信頼度3,予測4,信頼度4,予測5,信頼度5\n")
+
+    predictor_cache = {}
 
     for i in range(10, len(df)):
-        hist = df.iloc[:i].copy()
-        test_date = df.iloc[i]["抽せん日"]
-        try:
-            # 統計構築
-            freq, pair = build_stats(hist, main_col)
-            # 候補サンプリング
-            cands, scores = sample_candidates(freq, pair, rng, num_samples=2000, k=7)
-            # 多様化でTop-K
-            decoded, conf = diverse_topk(cands, scores, topk=10, lambda_div=0.6)
-            pairs = list(zip(decoded, conf))
-            save_gachi_to_csv(pairs, test_date, filename="loto7_predictions_gachi.csv")
-            print(f"[OK] {test_date.date()}")
-        except Exception as e:
-            print(f"[WARN] {test_date.date()} 失敗:", e)
+        set_global_seed(1000 + i)
 
-    print("[DONE] run_gachi_bulk_rescue 完了")
+        test_date = df.iloc[i]["抽せん日"]
+        test_date_str = test_date.strftime("%Y-%m-%d")
+
+        if test_date_str in skip_dates:
+            print(f"[INFO] 既に予測済み: {test_date_str} → スキップ")
+            continue
+
+        print(f"\n=== {test_date_str} の予測を開始 ===")
+        train_data = df.iloc[:i].copy()
+        latest_data = df.iloc[i-10:i].copy()
+
+        X, _, _ = preprocess_data(train_data)
+        if X is None:
+            print(f"[WARNING] {test_date_str} の学習データが無効です")
+            continue
+
+        input_size = X.shape[1]
+
+        if i % 50 == 0 or input_size not in predictor_cache:
+            print(f"[INFO] モデル再学習: {test_date_str} 時点")
+            predictor = LotoPredictor(input_size, 128, 7)
+            try:
+                predictor.train_model(train_data)
+            except Exception as e:
+                print("[WARN] train_model 失敗（フォールバックで続行）:", e)
+            predictor_cache[input_size] = predictor
+        else:
+            predictor = predictor_cache[input_size]
+
+        try:
+
+            res = predictor.predict(latest_data)
+
+            if not (isinstance(res, (tuple, list)) and len(res) == 2):
+                
+                raise RuntimeError("predict() must return (predictions, confidence_scores)")
+
+            predictions, confidence_scores = res
+        except Exception as e:
+            print(f"[ERROR] 通常predict失敗: {e}")
+            predictions, confidence_scores = None, None
+
+        if predictions is None:
+            print(f"[ERROR] {test_date_str} の通常予測に失敗しました（スキップ）")
+        else:
+            try:
+                verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), train_data)  # noqa
+            except Exception:
+                verified_predictions = list(zip(predictions, confidence_scores))
+            save_self_predictions(verified_predictions)
+            save_predictions_to_csv(verified_predictions, test_date)
+            git_commit_and_push("loto7_predictions.csv", "Auto update loto7_predictions.csv [skip ci]")
+
+        try:
+            decoded_sets, confidences = predictor.predict_gachi(df.iloc[:i], k_sets=10, alpha_pair=0.3)
+            if decoded_sets is not None:
+                print("\n=== ガチ予測 Top 10 ===")
+                for idx, (nums, conf) in enumerate(zip(decoded_sets[:10], confidences[:10]), 1):
+                    print(f"{idx:02d}: {sorted(nums)}  信頼度={conf:.3f}")
+                save_gachi_to_csv(list(zip(decoded_sets, confidences)), test_date)
+        except Exception as e:
+            print("[WARN] ガチ予測に失敗しました:", e)
+
+        model_dir = f"models/{test_date_str}"
+        try:
+            _save_all_models_no_self(predictor, model_dir)
+        except Exception as e:
+            print("[WARN] モデル保存に失敗:", e)
+
+        try:
+            make_compat_for_evaluator("loto7_predictions_gachi.csv", "loto7_predictions_for_eval.csv")
+            evaluate_prediction_accuracy_with_bonus("loto7_predictions_for_eval.csv", "loto7.csv")
+        except Exception as e:
+            print("[WARN] 評価に失敗:", e)
+
+    try:
+        future_date = df["抽せん日"].max() + pd.Timedelta(days=7)
+        future_date_str = future_date.strftime("%Y-%m-%d")
+
+        if future_date_str not in skip_dates:
+            print(f"\n=== {future_date_str} の未来予測を開始 ===")
+            latest_data = df.tail(10).copy()
+            train_data = df.copy()
+
+            X, _, _ = preprocess_data(train_data)
+            if X is None:
+                print("[WARNING] 未来予測用の学習データが無効です")
+            else:
+                input_size = X.shape[1]
+                if input_size not in predictor_cache:
+                    predictor = LotoPredictor(input_size, 128, 7)
+                    try:
+                        predictor.train_model(train_data)
+                    except Exception as e:
+                        print("[WARN] train_model 失敗（フォールバックで続行）:", e)
+                    predictor_cache[input_size] = predictor
+                else:
+                    predictor = predictor_cache[input_size]
+
+                try:
+
+                    res = predictor.predict(latest_data)
+
+                    if not (isinstance(res, (tuple, list)) and len(res) == 2):
+
+                        raise RuntimeError("predict() must return (predictions, confidence_scores)")
+
+                    predictions, confidence_scores = res
+                except Exception as e:
+                    print(f"[ERROR] 未来の通常predict失敗: {e}")
+                    predictions, confidence_scores = None, None
+
+                if predictions is not None:
+                    try:
+                        verified_predictions = verify_predictions(list(zip(predictions, confidence_scores)), train_data)  # noqa
+                    except Exception:
+                        verified_predictions = list(zip(predictions, confidence_scores))
+                    save_self_predictions(verified_predictions)
+                    save_predictions_to_csv(verified_predictions, future_date)
+                    git_commit_and_push("loto7_predictions.csv", "Auto predict future draw [skip ci]")
+
+                try:
+                    decoded_sets, confidences = predictor.predict_gachi(df, k_sets=10, alpha_pair=0.3)
+                    if decoded_sets is not None:
+                        save_gachi_to_csv(list(zip(decoded_sets, confidences)), future_date)
+                except Exception as e:
+                    print("[WARN] 未来のガチ予測に失敗:", e)
+
+                print(f"[INFO] 未来予測（{future_date_str}）完了")
+        else:
+            print(f"[INFO] 未来予測（{future_date_str}）は既に実行済みです")
+
+    except Exception as e:
+        print("[WARN] 未来予測ブロックで例外:", e)
 
 if __name__ == "__main__":
-    main()
+    bulk_predict_all_past_draws()
