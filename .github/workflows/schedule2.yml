@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # GITHUB_TOKEN で push するため必須
+  contents: write
 
 concurrency:
   group: auto-loto7-${{ github.ref }}
@@ -15,22 +15,20 @@ concurrency:
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Tokyo   # ← 重要：スクリプトの「今日/金曜」判定ズレ防止
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false  # 自前で GITHUB_TOKEN 設定するため
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          # cache: 'pip'                   # ← 無効化
-          # cache-dependency-path: |       # ← 無効化
-          #   requirements_core.txt
-          #   requirements_heavy.txt
 
       - name: Install dependencies and headless Chrome
         shell: bash
@@ -42,13 +40,11 @@ jobs:
             wget unzip xvfb rsync \
             libglib2.0-0 libnss3 libxi6 libxcomposite1 libxss1 \
             libatk-bridge2.0-0 libgtk-3-0 libasound2t64
-
           # Chrome 138
           wget -q https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chrome-linux64.zip
           unzip -q chrome-linux64.zip
           sudo mv chrome-linux64 /opt/chrome
           sudo ln -sf /opt/chrome/chrome /usr/bin/google-chrome
-
           # ChromeDriver 138
           wget -q https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chromedriver-linux64.zip
           unzip -q chromedriver-linux64.zip
@@ -73,6 +69,26 @@ jobs:
       - name: Run scraping script
         run: xvfb-run -a python scrapingloto7.py
 
+      # ── スクレイプ結果の健全性と鮮度をチェック ──
+      - name: Assert scrape freshness
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s loto7.csv ]; then
+            echo "::error::loto7.csv が生成されていないか空です。scrapingloto7.py を確認してください。"
+            exit 1
+          fi
+          echo "---- loto7.csv tail ----"
+          tail -n 5 loto7.csv || true
+          # 更新時刻チェック（JST想定）
+          NOW_TS=$(date +%s)
+          FILE_TS=$(date -r loto7.csv +%s)
+          AGE=$(( (NOW_TS - FILE_TS) / 60 ))
+          echo "loto7.csv age: ${AGE} min"
+          if [ $AGE -gt 180 ]; then
+            echo "::warning::loto7.csv が3時間以上前の更新です。最新回が反映されていない可能性があります。"
+          fi
+
       - name: Prepare git (common)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -90,19 +106,13 @@ jobs:
           git stash --include-untracked || true
           git checkout "$BRANCH"
           git pull --rebase origin "$BRANCH" || true
-
-          # rebase中に競合があれば、生成物は the theirs を優先（oursにしたい場合は --ours に変更）
           if [ -d .git/rebase-apply ] || [ -d .git/rebase-merge ]; then
             if [ -f loto7.csv ]; then git checkout --theirs loto7.csv || true; fi
             if [ -f loto7.csv ]; then git add loto7.csv || true; fi
             git rebase --continue || true
           fi
           git stash pop || true
-
-          if [ -f loto7.csv ]; then
-            git add loto7.csv
-          fi
-
+          if [ -f loto7.csv ]; then git add loto7.csv; fi
           if git diff --cached --quiet; then
             echo "No changes to loto7.csv"
           else
@@ -111,21 +121,38 @@ jobs:
           fi
 
       - name: Run predictor script
-        # セカンダリRepo同期を run_model_evolution.py 内で使う場合はENVを渡す
         env:
           SECONDARY_REPO: Joker7822/loto7
           SECONDARY_BRANCH: main
           MODEL_REPO_TOKEN: ${{ secrets.MODEL_REPO_TOKEN }}
         run: xvfb-run -a python run_gachi_bulk.py
 
-      # ★ 生成物のファイル名を正規化（*_gachi → 標準名）★
-      - name: Normalize prediction filenames
+      # 生成物の存在確認 & 標準名へ正規化（*_gachi → 標準）
+      - name: Normalize & assert prediction outputs
         shell: bash
         run: |
           set -euo pipefail
+          # 標準名へ寄せる
           if [ -f loto7_predictions_gachi.csv ] && [ ! -f loto7_predictions.csv ]; then
             mv loto7_predictions_gachi.csv loto7_predictions.csv
           fi
+
+          # 最低限の存在/非空チェック
+          missing=0
+          for f in loto7_predictions.csv; do
+            if [ ! -s "$f" ]; then
+              echo "::error::予想ファイル $f が見つからない、または空です。run_gachi_bulk.py を確認してください。"
+              missing=1
+            fi
+          done
+          if [ $missing -ne 0 ]; then
+            echo "---- デバッグ情報 (作成物一覧) ----"
+            ls -al
+            exit 1
+          fi
+
+          echo "---- loto7_predictions.csv head ----"
+          head -n 5 loto7_predictions.csv || true
 
       - name: Commit and push prediction results if changed
         shell: bash
@@ -136,8 +163,6 @@ jobs:
           git stash --include-untracked || true
           git checkout "$BRANCH"
           git pull --rebase origin "$BRANCH" || true
-
-          # rebase中の競合は生成物を the theirs 優先で自動解消
           if [ -d .git/rebase-apply ] || [ -d .git/rebase-merge ]; then
             for f in loto7_predictions.csv loto7_prediction_evaluation_with_bonus.csv loto7_evaluation_summary.txt self_predictions.csv; do
               if [ -f "$f" ]; then git checkout --theirs "$f" || true; fi
@@ -147,19 +172,16 @@ jobs:
           fi
           git stash pop || true
 
-          # 存在するファイルのみ add（pathspec エラー防止）
           files_to_add=()
           for f in loto7_predictions.csv loto7_prediction_evaluation_with_bonus.csv loto7_evaluation_summary.txt self_predictions.csv; do
-            [ -f "$f" ] && files_to_add+=("$f")
+            [ -f "$f" ] && [ -s "$f" ] && files_to_add+=("$f")
           done
-
           if [ ${#files_to_add[@]} -eq 0 ]; then
-            echo "No prediction files found to add."
+            echo "::warning::追加すべき予想ファイルが見つかりませんでした（非生成の可能性）。"
             exit 0
           fi
 
           git add "${files_to_add[@]}"
-
           if git diff --cached --quiet; then
             echo "No prediction result changes"
           else
@@ -167,13 +189,12 @@ jobs:
             git push origin HEAD:"$BRANCH"
           fi
 
-      # === Sync models + predictions to secondary repo (Joker7822/loto7) ===
       - name: Sync models & predictions to secondary repo
         if: always()
         env:
-          SECONDARY_REPO: Joker7822/loto7        # ← 保存先レポジトリ
-          SECONDARY_BRANCH: main                 # ← 保存先ブランチ
-          MODEL_REPO_TOKEN: ${{ secrets.MODEL_REPO_TOKEN }}  # ← PAT をSecretsに登録
+          SECONDARY_REPO: Joker7822/loto7
+          SECONDARY_BRANCH: main
+          MODEL_REPO_TOKEN: ${{ secrets.MODEL_REPO_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -185,18 +206,15 @@ jobs:
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
 
-          # Clone secondary repo
           rm -rf model_repo
           git clone --depth 1 "https://x-access-token:${MODEL_REPO_TOKEN}@github.com/${SECONDARY_REPO}.git" model_repo
           cd model_repo
           git checkout "${SECONDARY_BRANCH}" || git checkout -b "${SECONDARY_BRANCH}"
           cd ..
 
-          # 1) models/latest を上書き同期
           mkdir -p model_repo/models/latest
           rsync -a --delete models/latest/ model_repo/models/latest/ || true
 
-          # 2) predictions を上書き同期（存在するファイルのみ）
           mkdir -p model_repo/predictions
           for f in loto7_predictions.csv loto7_prediction_evaluation_with_bonus.csv loto7_evaluation_summary.txt self_predictions.csv; do
             if [ -f "$f" ]; then
