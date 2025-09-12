@@ -113,7 +113,7 @@ jobs:
           SECONDARY_REPO: Joker7822/loto7
           SECONDARY_BRANCH: main
           MODEL_REPO_TOKEN: ${{ secrets.MODEL_REPO_TOKEN }}
-        run: xvfb-run -a python limit_break_predictor.py
+        run: xvfb-run -a python lottery_prediction.py
 
       - name: Commit and push prediction results if changed
         shell: bash
